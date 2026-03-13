@@ -173,16 +173,15 @@ export default function EventsScreen({ navigation }: any) {
       {/* Header */}
       <LinearGradient colors={['#1A0533', '#0D0520', '#0A0A0F'] as const} style={styles.header}>
         <View style={styles.headerGlow} />
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={22} color={Colors.text} />
-        </TouchableOpacity>
-        <View style={styles.headerMid}>
+        <View style={styles.headerTop}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+            <Ionicons name="chevron-back" size={22} color={Colors.text} />
+          </TouchableOpacity>
           <Text style={styles.title}>Etkinlikler</Text>
           <View style={styles.countBadge}>
             <Text style={styles.count}>{filtered.length}</Text>
           </View>
         </View>
-        {/* Arama */}
         <View style={styles.searchContainer}>
           <Ionicons name="search-outline" size={16} color={Colors.textMuted} style={styles.searchIcon} />
           <TextInput
@@ -330,16 +329,16 @@ export default function EventsScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: { paddingTop: 56, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md, overflow: 'hidden' },
+  header: { paddingTop: 56, paddingHorizontal: Spacing.lg, paddingBottom: 12, overflow: 'hidden' },
   headerGlow: { position: 'absolute', top: -60, right: -30, width: 220, height: 220, borderRadius: 110, backgroundColor: '#7C3AED1A' },
+  headerTop: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   backBtn: {
-    width: 36, height: 36, borderRadius: 10,
+    width: 34, height: 34, borderRadius: 10,
     backgroundColor: Colors.surfaceAlt,
     alignItems: 'center', justifyContent: 'center',
-    marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.border,
+    borderWidth: 1, borderColor: Colors.border,
   },
-  headerMid: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: Spacing.md },
-  title: { color: Colors.text, fontSize: FontSize.xxl, fontWeight: '800' },
+  title: { color: Colors.text, fontSize: FontSize.xl, fontWeight: '800', flex: 1 },
   countBadge: {
     backgroundColor: Colors.primary + '33', borderRadius: BorderRadius.full,
     paddingHorizontal: 10, paddingVertical: 3,
@@ -351,13 +350,13 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surfaceAlt,
     borderRadius: BorderRadius.lg,
     borderWidth: 1, borderColor: Colors.border,
-    paddingHorizontal: 14, paddingVertical: 2,
-    marginBottom: Spacing.sm,
+    paddingHorizontal: 14, paddingVertical: 0,
+    marginBottom: 0,
   },
   searchIcon: { marginRight: 8 },
-  searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, paddingVertical: 13 },
-  dateScroll: { marginBottom: Spacing.md, flexGrow: 0 },
-  dateList: { paddingHorizontal: Spacing.lg, gap: 8, alignItems: 'center', paddingVertical: 4 },
+  searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, paddingVertical: 11 },
+  dateScroll: { marginBottom: 10, flexGrow: 0 },
+  dateList: { paddingHorizontal: Spacing.lg, gap: 8, paddingVertical: 4 },
   dateChip: {
     minWidth: 52,
     alignItems: 'center',
@@ -370,21 +369,21 @@ const styles = StyleSheet.create({
   dateChipGrad: { alignItems: 'center', width: '100%' },
   dateChipLabel: {
     color: Colors.textSecondary,
-    fontSize: FontSize.sm, fontWeight: '700',
-    paddingTop: 10, paddingHorizontal: 13,
+    fontSize: 10, fontWeight: '700',
+    paddingTop: 8, paddingHorizontal: 11,
     paddingBottom: 2,
     textAlign: 'center',
   },
   dateChipLabelActive: { color: '#fff' },
-  dateChipLabelOnly: { paddingBottom: 10 },
+  dateChipLabelOnly: { paddingBottom: 8 },
   dateChipSub: {
     color: Colors.textMuted,
-    fontSize: 18, fontWeight: '800',
-    paddingBottom: 10, textAlign: 'center',
+    fontSize: 15, fontWeight: '800',
+    paddingBottom: 8, textAlign: 'center',
   },
   dateChipSubActive: { color: 'rgba(255,255,255,0.85)' },
   genreScroll: { marginBottom: Spacing.sm, flexGrow: 0 },
-  genreList: { paddingHorizontal: Spacing.lg, gap: 8, paddingVertical: 4, alignItems: 'center' },
+  genreList: { paddingHorizontal: Spacing.lg, gap: 8, paddingVertical: 4 },
   genreChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     paddingHorizontal: 12, paddingVertical: 7,
