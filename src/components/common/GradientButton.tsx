@@ -8,15 +8,16 @@ interface Props {
   onPress: () => void;
   loading?: boolean;
   disabled?: boolean;
-  variant?: 'primary' | 'customer' | 'artist' | 'venue';
+  variant?: 'primary' | 'customer' | 'artist' | 'venue' | 'organizer';
   style?: ViewStyle;
 }
 
 const gradients: Record<string, [string, string]> = {
-  primary: [Colors.gradientStart, Colors.gradientEnd],
-  customer: [Colors.customerColor, '#0891B2'],
-  artist: [Colors.artistColor, Colors.primaryDark],
-  venue: [Colors.venueColor, '#D97706'],
+  primary:   [Colors.gradientStart, Colors.gradientEnd],
+  customer:  [Colors.customerColor, '#0891B2'],
+  artist:    [Colors.artistColor, Colors.primaryDark],
+  venue:     [Colors.venueColor, '#D97706'],
+  organizer: [Colors.organizerColor, '#BE123C'],
 };
 
 export default function GradientButton({ title, onPress, loading, disabled, variant = 'primary', style }: Props) {

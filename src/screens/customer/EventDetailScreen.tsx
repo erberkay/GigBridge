@@ -1,10 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { doc, setDoc, deleteDoc, getDoc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
+import { db } from '../../services/firebase';
+import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
+// ERR-EVENTDETAIL-001 Katılım kaydedilemedi
+const ERR = { ATTEND_FAILED: 'ERR-EVENTDETAIL-001' } as const;
 
 const GENRE_COLORS: Record<string, readonly [string, string]> = {
   Jazz: ['#F59E0B', '#D97706'],
@@ -24,30 +29,58 @@ const DEMO_ATTENDEES = [
   { name: 'Ali K.', colors: ['#EC4899', '#BE185D'] as [string, string] },
 ];
 
-export default function EventDetailScreen({ route, navigation }: any) {
-  const { event } = route.params ?? {
-    event: {
-      title: 'Electronic Night',
-      venue: 'Babylon Club',
-      artist: 'DJ Armin',
-      date: 'Bugün',
-      time: '22:00',
-      genre: 'Electronic',
-      attendees: 340,
-      price: '₺150',
-    },
-  };
-  const [attending, setAttending] = useState(false);
+const DEFAULT_EVENT = {
+  title: 'Electronic Night', venue: 'Babylon Club', artist: 'DJ Armin',
+  date: 'Bugün', time: '22:00', genre: 'Electronic', attendees: 340, price: '₺150',
+};
 
+export default function EventDetailScreen({ route, navigation }: any) {
+  const event = route.params?.event ?? DEFAULT_EVENT;
+  const userId      = useAuthStore((s) => s.userId);
+  const displayName = useAuthStore((s) => s.displayName);
+  const [attending, setAttending] = useState(false);
+  const [attendLoading, setAttendLoading] = useState(false);
+
+  const eventId = event.id ?? event.title;
   const genreColors = GENRE_COLORS[event.genre] ?? [Colors.primary, Colors.primaryDark];
   const displayDate = event.time ? `${event.date} ${event.time}` : event.date;
 
-  const handleAttend = () => {
-    setAttending(!attending);
-    if (!attending) {
-      Alert.alert('Harika!', 'Etkinliğe katılım isteğiniz alındı.');
+  // Kullanıcının katılım durumunu yükle
+  useEffect(() => {
+    if (!userId || userId.startsWith('demo_')) return;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'events', eventId, 'attendees', userId));
+        setAttending(snap.exists());
+      } catch { /* sessizce geç */ }
+    })();
+  }, [eventId, userId]);
+
+  const handleAttend = useCallback(async () => {
+    if (!userId || userId.startsWith('demo_')) {
+      Alert.alert('Giriş Gerekli', 'Etkinliğe katılmak için giriş yapmalısınız.');
+      return;
     }
-  };
+    setAttendLoading(true);
+    try {
+      const attendeeRef = doc(db, 'events', eventId, 'attendees', userId);
+      const eventRef = doc(db, 'events', eventId);
+      if (!attending) {
+        await setDoc(attendeeRef, { userId, displayName: displayName ?? '', joinedAt: serverTimestamp() });
+        try { await updateDoc(eventRef, { attendeeCount: increment(1) }); } catch { /* event olmayabilir */ }
+        setAttending(true);
+        Alert.alert('Harika!', 'Etkinliğe katılım isteğiniz alındı.');
+      } else {
+        await deleteDoc(attendeeRef);
+        try { await updateDoc(eventRef, { attendeeCount: increment(-1) }); } catch { /* event olmayabilir */ }
+        setAttending(false);
+      }
+    } catch {
+      Alert.alert('Hata', `Katılım kaydedilemedi. (${ERR.ATTEND_FAILED})`);
+    } finally {
+      setAttendLoading(false);
+    }
+  }, [userId, displayName, eventId, attending]);
 
   return (
     <View style={styles.container}>
@@ -63,7 +96,7 @@ export default function EventDetailScreen({ route, navigation }: any) {
 
           {/* Genre badge with genre color */}
           <LinearGradient
-            colors={genreColors as any}
+            colors={[...genreColors]}
             style={styles.heroBadge}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
@@ -98,18 +131,18 @@ export default function EventDetailScreen({ route, navigation }: any) {
         {/* Stats */}
         <View style={styles.statsRow}>
           <LinearGradient colors={['#1E1040', '#2D1B69']} style={styles.statCard}>
+            <Ionicons name="people" size={16} color="#A78BFA" style={styles.statIcon} />
             <Text style={styles.statValue}>{event.attendees}</Text>
             <Text style={styles.statLabel}>Katılımcı</Text>
           </LinearGradient>
           <LinearGradient colors={[Colors.accent + 'CC', '#D97706CC']} style={styles.statCard}>
-            <Text style={[styles.statValue, { color: '#FFF' }]}>{event.price}</Text>
-            <Text style={[styles.statLabel, { color: 'rgba(255,255,255,0.7)' }]}>Bilet</Text>
+            <Ionicons name="ticket-outline" size={16} color="#fff" style={styles.statIcon} />
+            <Text style={[styles.statValue, styles.statValueWhite]}>{event.price}</Text>
+            <Text style={[styles.statLabel, styles.statLabelWhite]}>Bilet</Text>
           </LinearGradient>
           <LinearGradient colors={['#1A2E1A', '#0F3D1F']} style={styles.statCard}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, justifyContent: 'center' }}>
-              <Ionicons name="flame" size={14} color={Colors.success} />
-              <Text style={[styles.statValue, { color: Colors.success }]}>Sıcak</Text>
-            </View>
+            <Ionicons name="flame" size={16} color={Colors.success} style={styles.statIcon} />
+            <Text style={[styles.statValue, styles.statValueSuccess]}>Sıcak</Text>
             <Text style={styles.statLabel}>Durum</Text>
           </LinearGradient>
         </View>
@@ -128,21 +161,23 @@ export default function EventDetailScreen({ route, navigation }: any) {
           <Text style={styles.sectionTitle}>Mekan</Text>
           <TouchableOpacity
             style={styles.infoCard}
-            onPress={() => navigation.navigate('VenueDetail', { venue: { name: event.venue, city: 'İstanbul', rating: 4.7, capacity: 500 } })}
+            onPress={() => navigation.navigate('VenueDetail', { venue: { name: event.venue } })}
             activeOpacity={0.8}
           >
             <LinearGradient colors={['#0D3B5E', '#1A5276']} style={styles.infoCardAvatar}>
-              <Text style={styles.infoCardAvatarText}>{event.venue.charAt(0)}</Text>
+              <Text style={styles.infoCardAvatarText}>{event.venue?.charAt(0)?.toUpperCase() ?? 'M'}</Text>
             </LinearGradient>
             <View style={styles.infoCardContent}>
               <Text style={styles.infoCardName}>{event.venue}</Text>
               <Text style={styles.infoCardSub}>İstanbul, Türkiye</Text>
               <View style={styles.ratingRow}>
-                <Text style={styles.ratingStars}>★★★★★</Text>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Ionicons key={i} name="star" size={10} color={Colors.accent} />
+                ))}
                 <Text style={styles.ratingText}>4.7 · Gece Kulübü</Text>
               </View>
             </View>
-            <Text style={styles.infoCardArrow}>›</Text>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </TouchableOpacity>
         </View>
 
@@ -156,18 +191,20 @@ export default function EventDetailScreen({ route, navigation }: any) {
             })}
             activeOpacity={0.8}
           >
-            <LinearGradient colors={genreColors as any} style={styles.infoCardAvatar}>
-              <Text style={styles.infoCardAvatarText}>{event.artist.charAt(0)}</Text>
+            <LinearGradient colors={[...genreColors]} style={styles.infoCardAvatar}>
+              <Text style={styles.infoCardAvatarText}>{event.artist?.charAt(0)?.toUpperCase() ?? 'S'}</Text>
             </LinearGradient>
             <View style={styles.infoCardContent}>
               <Text style={styles.infoCardName}>{event.artist}</Text>
               <Text style={styles.infoCardSub}>{event.genre}</Text>
               <View style={styles.ratingRow}>
-                <Text style={styles.ratingStars}>★★★★★</Text>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Ionicons key={i} name="star" size={10} color={Colors.accent} />
+                ))}
                 <Text style={styles.ratingText}>4.9 · 12K takipçi</Text>
               </View>
             </View>
-            <Text style={styles.infoCardArrow}>›</Text>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </TouchableOpacity>
         </View>
 
@@ -175,7 +212,7 @@ export default function EventDetailScreen({ route, navigation }: any) {
         <TouchableOpacity style={styles.section} onPress={() => navigation.navigate('EventAttendees', { event })}>
           <View style={styles.attendeesHeader}>
             <Text style={styles.sectionTitle}>Katılıyor ({event.attendees})</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <View style={styles.seeAllRow}>
               <Text style={styles.seeAttendeesText}>Tümünü Gör</Text>
               <Ionicons name="chevron-forward" size={14} color={Colors.textSecondary} />
             </View>
@@ -185,19 +222,19 @@ export default function EventDetailScreen({ route, navigation }: any) {
               <LinearGradient
                 key={i}
                 colors={a.colors}
-                style={[styles.attendeeAvatar, { marginLeft: i > 0 ? -10 : 0 }]}
+                style={[styles.attendeeAvatar, i > 0 && styles.attendeeAvatarOverlap]}
               >
-                <Text style={styles.attendeeInitial}>{a.name.charAt(0)}</Text>
+                <Text style={styles.attendeeInitial}>{a.name?.charAt(0)?.toUpperCase() ?? '?'}</Text>
               </LinearGradient>
             ))}
             <View style={styles.attendeeMore}>
-              <Text style={styles.attendeeMoreText}>+{event.attendees - 5}</Text>
+              <Text style={styles.attendeeMoreText}>+{Math.max(0, event.attendees - DEMO_ATTENDEES.length)}</Text>
             </View>
           </View>
           <Text style={styles.attendeesHint}>Pro hesapla tüm katılımcıları gör ve tanış →</Text>
         </TouchableOpacity>
 
-        <View style={{ height: 100 }} />
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
       {/* Alt buton */}
@@ -209,14 +246,17 @@ export default function EventDetailScreen({ route, navigation }: any) {
         <TouchableOpacity
           style={styles.attendBtn}
           onPress={handleAttend}
+          disabled={attendLoading}
           activeOpacity={0.85}
         >
           <LinearGradient
-            colors={attending ? [Colors.success, '#059669'] : (genreColors as any)}
-            style={styles.attendBtnGrad}
+            colors={attending ? [Colors.success, '#059669'] : [...genreColors]}
+            style={[styles.attendBtnGrad, attendLoading && { opacity: 0.6 }]}
           >
-            {attending && <Ionicons name="checkmark-circle" size={18} color="#fff" style={{ marginRight: 6 }} />}
-            <Text style={styles.attendBtnText}>{attending ? 'Katılıyorum' : 'Katıl'}</Text>
+            {attending && !attendLoading && <Ionicons name="checkmark-circle" size={18} color="#fff" style={styles.attendIcon} />}
+            <Text style={styles.attendBtnText}>
+              {attendLoading ? 'Yükleniyor...' : attending ? 'Katılıyorum' : 'Katıl'}
+            </Text>
           </LinearGradient>
         </TouchableOpacity>
       </View>
@@ -228,7 +268,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   hero: { paddingTop: 56, paddingBottom: Spacing.xl, paddingHorizontal: Spacing.lg },
   backBtn: { marginBottom: Spacing.lg },
-  backText: { color: Colors.textSecondary, fontSize: FontSize.md },
   heroBadge: {
     alignSelf: 'flex-start',
     paddingHorizontal: 14, paddingVertical: 6,
@@ -257,10 +296,17 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     alignItems: 'center',
   },
+  statIcon: { marginBottom: 4 },
   statValue: { color: Colors.text, fontSize: FontSize.md, fontWeight: '700', marginBottom: 4 },
+  statValueWhite: { color: '#FFF' },
+  statValueSuccess: { color: Colors.success },
   statLabel: { color: Colors.textMuted, fontSize: FontSize.xs },
+  statLabelWhite: { color: 'rgba(255,255,255,0.7)' },
   section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.lg },
-  sectionTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: Spacing.md },
+  sectionTitle: {
+    color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: Spacing.md,
+    paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: Colors.primary,
+  },
   description: { color: Colors.textSecondary, fontSize: FontSize.md, lineHeight: 24 },
   infoCard: {
     flexDirection: 'row',
@@ -281,15 +327,14 @@ const styles = StyleSheet.create({
   infoCardName: { color: Colors.text, fontSize: FontSize.md, fontWeight: '700', marginBottom: 2 },
   infoCardSub: { color: Colors.textSecondary, fontSize: FontSize.sm, marginBottom: 4 },
   ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  ratingStars: { color: Colors.accent, fontSize: 10, letterSpacing: 1 },
   ratingText: { color: Colors.textMuted, fontSize: FontSize.xs },
-  infoCardArrow: { color: Colors.textMuted, fontSize: 20 },
   attendeeAvatars: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   attendeeAvatar: {
     width: 40, height: 40, borderRadius: 20,
     borderWidth: 2, borderColor: Colors.background,
     alignItems: 'center', justifyContent: 'center',
   },
+  attendeeAvatarOverlap: { marginLeft: -10 },
   attendeeInitial: { color: '#fff', fontSize: 14, fontWeight: '800' },
   attendeeMore: {
     marginLeft: -10,
@@ -301,6 +346,7 @@ const styles = StyleSheet.create({
   attendeeMoreText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   attendeesHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.md },
   seeAttendeesText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: '600' },
+  seeAllRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   attendeesHint: { color: Colors.textMuted, fontSize: FontSize.xs, fontStyle: 'italic' },
   footer: {
     flexDirection: 'row',
@@ -314,7 +360,9 @@ const styles = StyleSheet.create({
   priceBox: { flex: 1 },
   priceLabel: { color: Colors.textMuted, fontSize: FontSize.xs },
   priceValue: { color: Colors.text, fontSize: FontSize.xl, fontWeight: '800' },
-  attendBtn: { flex: 2, borderRadius: BorderRadius.md, overflow: 'hidden' },
-  attendBtnGrad: { paddingVertical: 14, alignItems: 'center', flexDirection: 'row', justifyContent: 'center' },
+  attendBtn: { flex: 2, borderRadius: 10, overflow: 'hidden' },
+  attendBtnGrad: { paddingVertical: 13, alignItems: 'center', flexDirection: 'row', justifyContent: 'center' },
   attendBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  bottomSpacer: { height: 100 },
+  attendIcon: { marginRight: 6 },
 });

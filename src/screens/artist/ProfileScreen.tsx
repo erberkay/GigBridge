@@ -1,14 +1,23 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput, Linking, Image, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { signOut } from 'firebase/auth';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, getDoc, getDocs, collection, query, where } from 'firebase/firestore';
 import { auth, db } from '../../services/firebase';
 import { pickAndUploadImage } from '../../services/uploadImage';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
 
+
+// ERR-APROFILE-001 Fotoğraf yükleme hatası   ERR-APROFILE-002 Firestore güncelleme hatası
+// ERR-APROFILE-003 Çıkış yapılamadı   ERR-APROFILE-004 Profil yüklenemedi
+const ERR = {
+  PHOTO_UPLOAD:    'ERR-APROFILE-001',
+  FIRESTORE_UPDATE:'ERR-APROFILE-002',
+  SIGN_OUT_FAILED: 'ERR-APROFILE-003',
+  LOAD_FAILED:     'ERR-APROFILE-004',
+} as const;
 
 const DEFAULT_GENRES = ['Electronic', 'House', 'Techno', 'Trance', 'Minimal'];
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -19,31 +28,69 @@ const SOCIAL: { iconName: IoniconName; label: string; handle: string; url: strin
 ];
 
 export default function ArtistProfileScreen({ navigation }: any) {
-  const { displayName, email, userId, photoURL: storePhoto, clearUser, updatePhotoURL } = useAuthStore();
+  const displayName    = useAuthStore((s) => s.displayName);
+  const email          = useAuthStore((s) => s.email);
+  const userId         = useAuthStore((s) => s.userId);
+  const storePhoto     = useAuthStore((s) => s.photoURL);
+  const clearUser      = useAuthStore((s) => s.clearUser);
+  const updatePhotoURL = useAuthStore((s) => s.updatePhotoURL);
   const [isEditing, setIsEditing] = useState(false);
   const [bio, setBio] = useState('10 yılı aşkın sahne deneyimiyle elektronik müzik alanında öne çıkan bir DJ ve prodüktör. İstanbul\'un önde gelen kulüplerinde sahne alan sanatçı, uluslararası festivallerde de performans sergilemiştir.');
   const [priceMin, setPriceMin] = useState('2.500');
   const [priceMax, setPriceMax] = useState('8.000');
   const [genres, setGenres] = useState(DEFAULT_GENRES);
   const [saving, setSaving] = useState(false);
-  const [photoURL, setPhotoURL] = useState<string | null>(storePhoto ?? null);
+  const [profileStats, setProfileStats] = useState({ performances: '—', rating: '—', reviews: '—', followers: '—' });
+  const [localPhoto, setLocalPhoto] = useState<string | null>(storePhoto ?? null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [newGenreText, setNewGenreText] = useState('');
 
-  const handleSave = async () => {
+  useEffect(() => {
+    if (!userId) return;
+    Promise.all([
+      getDoc(doc(db, 'users', userId)),
+      getDocs(query(collection(db, 'invitations'), where('artistId', '==', userId), where('status', '==', 'accepted'))),
+      getDocs(query(collection(db, 'reviews'), where('targetId', '==', userId), where('targetType', '==', 'artist'))),
+    ]).then(([userSnap, invSnap, reviewsSnap]) => {
+      if (userSnap.exists()) {
+        const d = userSnap.data();
+        if (d.bio) setBio(d.bio);
+        if (d.priceMin != null) setPriceMin(String(d.priceMin));
+        if (d.priceMax != null) setPriceMax(String(d.priceMax));
+        if (d.genres?.length) setGenres(d.genres);
+        const fc = d.followerCount ?? 0;
+        const revCount  = reviewsSnap.size;
+        const avgRating = revCount > 0
+          ? (reviewsSnap.docs.reduce((s, doc) => s + (doc.data().rating ?? 0), 0) / revCount).toFixed(1)
+          : '—';
+        setProfileStats({
+          performances: String(invSnap.size),
+          rating:       avgRating,
+          reviews:      String(revCount),
+          followers:    fc >= 1000 ? `${(fc / 1000).toFixed(1)}K` : String(fc),
+        });
+      }
+    }).catch((err) => { console.warn(ERR.LOAD_FAILED, err); });
+  }, [userId]);
+
+  const handleSave = useCallback(async () => {
     if (!userId) return;
     setSaving(true);
     try {
-      await updateDoc(doc(db, 'users', userId), { bio, priceMin, priceMax, genres, ...(photoURL ? { photoURL } : {}) });
+      await updateDoc(doc(db, 'users', userId), {
+        bio, priceMin, priceMax, genres,
+        ...(localPhoto ? { photoURL: localPhoto } : {}),
+      });
       setIsEditing(false);
       Alert.alert('Kaydedildi', 'Profiliniz güncellendi.');
     } catch {
-      Alert.alert('Hata', 'Profil güncellenemedi.');
+      Alert.alert('Hata', `Profil güncellenemedi. (${ERR.FIRESTORE_UPDATE})`);
     } finally {
       setSaving(false);
     }
-  };
+  }, [userId, bio, priceMin, priceMax, genres, localPhoto]);
 
-  const handlePickPhoto = async () => {
+  const handlePickPhoto = useCallback(async () => {
     if (userId?.startsWith('demo_')) {
       Alert.alert('Demo Mod', 'Demo hesapta fotoğraf yükleyemezsiniz.');
       return;
@@ -51,33 +98,51 @@ export default function ArtistProfileScreen({ navigation }: any) {
     setUploadingPhoto(true);
     try {
       const url = await pickAndUploadImage(`profile_photos/${userId}`);
-      if (url) { setPhotoURL(url); updatePhotoURL(url); }
+      if (url && userId) {
+        setLocalPhoto(url);
+        updatePhotoURL(url);
+        try {
+          await updateDoc(doc(db, 'users', userId), { photoURL: url });
+        } catch {
+          console.warn(`[${ERR.PHOTO_UPLOAD}] Firestore photoURL güncellenemedi.`);
+        }
+      }
     } catch {
-      Alert.alert('Hata', 'Fotoğraf yüklenemedi.');
+      Alert.alert('Hata', `Fotoğraf yüklenemedi. (${ERR.PHOTO_UPLOAD})`);
     } finally {
       setUploadingPhoto(false);
     }
-  };
+  }, [userId, updatePhotoURL]);
 
-  const removeGenre = (g: string) => setGenres((prev) => prev.filter((x) => x !== g));
+  const removeGenre = useCallback((g: string) => {
+    setGenres((prev) => prev.filter((x) => x !== g));
+  }, []);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     Alert.alert('Çıkış', 'Hesabınızdan çıkmak istiyor musunuz?', [
       { text: 'İptal', style: 'cancel' },
       {
         text: 'Çıkış Yap', style: 'destructive',
-        onPress: async () => { await signOut(auth); clearUser(); },
+        onPress: async () => {
+          try {
+            await signOut(auth);
+          } catch {
+            console.warn(`[${ERR.SIGN_OUT_FAILED}] Firebase sign-out başarısız.`);
+          } finally {
+            clearUser();
+          }
+        },
       },
     ]);
-  };
+  }, [clearUser]);
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       {/* Kapak & Avatar */}
       <LinearGradient colors={[Colors.primaryDark, '#1A0A2E', Colors.background]} style={styles.coverGradient}>
         <TouchableOpacity style={styles.avatarWrapper} onPress={handlePickPhoto} disabled={uploadingPhoto}>
-          {photoURL ? (
-            <Image source={{ uri: photoURL }} style={styles.avatarImage} />
+          {localPhoto ? (
+            <Image source={{ uri: localPhoto }} style={styles.avatarImage} />
           ) : (
             <LinearGradient colors={[Colors.artistColor, Colors.primaryDark]} style={styles.avatar}>
               <Text style={styles.avatarText}>{displayName?.charAt(0).toUpperCase() ?? '?'}</Text>
@@ -91,7 +156,7 @@ export default function ArtistProfileScreen({ navigation }: any) {
           </View>
         </TouchableOpacity>
         <Text style={styles.name}>{displayName ?? 'Sanatçı'}</Text>
-        <Text style={styles.email}>{email}</Text>
+        <Text style={styles.email}>{email ?? ''}</Text>
         <View style={styles.typeBadge}>
           <Ionicons name="mic-outline" size={13} color={Colors.artistColor} />
           <Text style={styles.typeText}>Sanatçı</Text>
@@ -104,10 +169,10 @@ export default function ArtistProfileScreen({ navigation }: any) {
 
       {/* İstatistikler */}
       <View style={styles.statsRow}>
-        <StatCard label="Performans" value="28" />
-        <StatCard label="Puan" value="4.8" color={Colors.accent} />
-        <StatCard label="Yorum" value="64" />
-        <StatCard label="Takipçi" value="1.2K" color={Colors.artistColor} />
+        <StatCard label="Performans" value={profileStats.performances} />
+        <StatCard label="Puan"       value={profileStats.rating}       color={Colors.accent} />
+        <StatCard label="Yorum"      value={profileStats.reviews} />
+        <StatCard label="Takipçi"    value={profileStats.followers}    color={Colors.artistColor} />
       </View>
 
       {/* Türler */}
@@ -122,18 +187,40 @@ export default function ArtistProfileScreen({ navigation }: any) {
               activeOpacity={isEditing ? 0.7 : 1}
             >
               <Text style={styles.genreTagText}>{g}</Text>
-              {isEditing && <Ionicons name="close" size={12} color={Colors.textMuted} style={{ marginLeft: 4 }} />}
+              {isEditing && <Ionicons name="close" size={12} color={Colors.textMuted} style={styles.closeTagIcon} />}
             </TouchableOpacity>
           ))}
           {isEditing && (
-            <TouchableOpacity style={styles.addTag} onPress={() => Alert.prompt(
-              'Tür Ekle',
-              'Yeni müzik türü girin:',
-              (text) => { if (text?.trim()) setGenres((prev) => [...prev, text.trim()]); },
-              'plain-text',
-            )}>
-              <Text style={styles.addTagText}>+ Ekle</Text>
-            </TouchableOpacity>
+            newGenreText.length > 0 ? (
+              <View style={styles.addGenreRow}>
+                <TextInput
+                  style={styles.addGenreInput}
+                  value={newGenreText}
+                  onChangeText={setNewGenreText}
+                  placeholder="Tür adı..."
+                  placeholderTextColor={Colors.textMuted}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={() => {
+                    if (newGenreText.trim()) setGenres((prev) => [...prev, newGenreText.trim()]);
+                    setNewGenreText('');
+                  }}
+                />
+                <TouchableOpacity
+                  style={styles.addGenreConfirm}
+                  onPress={() => {
+                    if (newGenreText.trim()) setGenres((prev) => [...prev, newGenreText.trim()]);
+                    setNewGenreText('');
+                  }}
+                >
+                  <Ionicons name="checkmark" size={14} color="#fff" />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.addTag} onPress={() => setNewGenreText(' ')}>
+                <Text style={styles.addTagText}>+ Ekle</Text>
+              </TouchableOpacity>
+            )
           )}
         </View>
       </View>
@@ -199,13 +286,13 @@ export default function ArtistProfileScreen({ navigation }: any) {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Sosyal Medya</Text>
         {SOCIAL.map((s) => (
-          <TouchableOpacity key={s.label} style={styles.socialRow} onPress={() => Linking.openURL(s.url)}>
+          <TouchableOpacity key={s.label} style={styles.socialRow} onPress={() => Linking.openURL(s.url).catch(() => {})}>
             <Ionicons name={s.iconName} size={20} color={Colors.artistColor} style={styles.socialIcon} />
             <View style={styles.socialInfo}>
               <Text style={styles.socialLabel}>{s.label}</Text>
               <Text style={styles.socialHandle}>{s.handle}</Text>
             </View>
-            <Text style={styles.socialArrow}>›</Text>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </TouchableOpacity>
         ))}
       </View>
@@ -222,7 +309,7 @@ export default function ArtistProfileScreen({ navigation }: any) {
       </View>
 
       <View style={styles.settingsMenu}>
-        <TouchableOpacity style={[styles.settingsMenuItem, { borderBottomWidth: 1, borderBottomColor: Colors.border }]} onPress={() => navigation.navigate('Notifications')}>
+        <TouchableOpacity style={[styles.settingsMenuItem, styles.settingsMenuItemBordered]} onPress={() => navigation.navigate('Notifications')}>
           <Ionicons name="notifications-outline" size={20} color={Colors.textSecondary} style={styles.settingsMenuIcon} />
           <Text style={styles.settingsMenuLabel}>Bildirim Ayarları</Text>
           <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
@@ -236,7 +323,7 @@ export default function ArtistProfileScreen({ navigation }: any) {
 
       <TouchableOpacity style={styles.proBtn} onPress={() => navigation.navigate('ProAccount')} activeOpacity={0.85}>
         <LinearGradient colors={[Colors.artistColor, Colors.primary]} style={styles.proBtnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <View style={styles.proBtnInner}>
             <Ionicons name="diamond-outline" size={18} color="#fff" />
             <Text style={styles.proBtnText}>Pro Hesaba Geç</Text>
           </View>
@@ -247,7 +334,7 @@ export default function ArtistProfileScreen({ navigation }: any) {
         <Text style={styles.logoutText}>Çıkış Yap</Text>
       </TouchableOpacity>
 
-      <View style={{ height: 100 }} />
+      <View style={styles.bottomSpacer} />
     </ScrollView>
   );
 }
@@ -255,7 +342,7 @@ export default function ArtistProfileScreen({ navigation }: any) {
 function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <View style={styles.statCard}>
-      <Text style={[styles.statValue, color ? { color } : {}]}>{value}</Text>
+      <Text style={[styles.statValue, color ? { color } : null]}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
@@ -279,7 +366,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 2, borderColor: Colors.background,
   },
-  avatarImage: { width: 90, height: 90, borderRadius: 45 },
+  avatarImage: { width: 90, height: 90, borderRadius: 45, resizeMode: 'cover' },
   cameraBtn: {
     position: 'absolute', bottom: 0, left: 0,
     width: 26, height: 26, borderRadius: 13,
@@ -287,7 +374,6 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 2, borderColor: Colors.background,
   },
-  cameraIcon: { fontSize: 12 },
   name: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.text, marginBottom: 4 },
   email: { fontSize: FontSize.sm, color: Colors.textSecondary, marginBottom: 12 },
   typeBadge: {
@@ -300,9 +386,9 @@ const styles = StyleSheet.create({
   },
   typeText: { color: Colors.artistColor, fontSize: FontSize.sm, fontWeight: '600' },
   editBtn: {
-    paddingHorizontal: 24, paddingVertical: 10,
+    paddingHorizontal: 20, paddingVertical: 8,
     borderRadius: BorderRadius.full,
-    borderWidth: 1.5, borderColor: Colors.artistColor,
+    borderWidth: 1, borderColor: Colors.artistColor,
   },
   editBtnText: { color: Colors.artistColor, fontSize: FontSize.sm, fontWeight: '700' },
   statsRow: {
@@ -339,6 +425,21 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
   addTagText: { color: Colors.textMuted, fontSize: FontSize.sm },
+  addGenreRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  addGenreInput: {
+    flex: 1,
+    backgroundColor: Colors.surfaceAlt,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 10, paddingVertical: 6,
+    color: Colors.text, fontSize: FontSize.sm,
+    minWidth: 80,
+  },
+  addGenreConfirm: {
+    width: 28, height: 28, borderRadius: 8,
+    backgroundColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center',
+  },
   bioCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.md,
@@ -387,7 +488,6 @@ const styles = StyleSheet.create({
   socialInfo: { flex: 1 },
   socialLabel: { color: Colors.textSecondary, fontSize: FontSize.xs, marginBottom: 2 },
   socialHandle: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '600' },
-  socialArrow: { color: Colors.textMuted, fontSize: 20 },
   noticeCard: {
     flexDirection: 'row',
     backgroundColor: Colors.artistColor + '11',
@@ -396,7 +496,6 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.artistColor + '33',
     gap: 12,
   },
-  noticeIcon: { marginTop: 2 },
   noticeContent: { flex: 1 },
   noticeTitle: { color: Colors.artistColor, fontSize: FontSize.sm, fontWeight: '700', marginBottom: 4 },
   noticeText: { color: Colors.textSecondary, fontSize: FontSize.xs, lineHeight: 18 },
@@ -406,8 +505,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 12,
   },
-  proBtnGrad: { paddingVertical: 16, alignItems: 'center' },
-  proBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  proBtnGrad: { paddingVertical: 18, paddingHorizontal: Spacing.lg, alignItems: 'center' },
+  proBtnText: { color: '#fff', fontSize: FontSize.lg, fontWeight: '700' },
   settingsMenu: {
     marginHorizontal: Spacing.lg,
     backgroundColor: Colors.surface,
@@ -419,7 +518,6 @@ const styles = StyleSheet.create({
   settingsMenuItem: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: Spacing.md, paddingVertical: 16,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   settingsMenuIcon: { width: 28 },
   settingsMenuLabel: { color: Colors.text, fontSize: FontSize.md, flex: 1 },
@@ -432,4 +530,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.error + '11',
   },
   logoutText: { color: Colors.error, fontSize: FontSize.md, fontWeight: '600' },
+  closeTagIcon: { marginLeft: 4 },
+  settingsMenuItemBordered: { borderBottomWidth: 1, borderBottomColor: Colors.border },
+  proBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  bottomSpacer: { height: 100 },
 });

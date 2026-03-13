@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, TextInput, Text, StyleSheet, TouchableOpacity, TextInputProps } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors, BorderRadius, FontSize } from '../../theme';
 
 interface Props extends TextInputProps {
@@ -24,7 +25,7 @@ export default function Input({ label, error, secureToggle, secureTextEntry, sty
         />
         {secureToggle && (
           <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
-            <Text style={styles.eyeText}>{showPassword ? '🙈' : '👁️'}</Text>
+            <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={Colors.textMuted} />
           </TouchableOpacity>
         )}
       </View>
@@ -66,8 +67,6 @@ const styles = StyleSheet.create({
   },
   eyeBtn: {
     paddingHorizontal: 14,
-  },
-  eyeText: {
-    fontSize: 16,
+    paddingVertical: 14,
   },
 });

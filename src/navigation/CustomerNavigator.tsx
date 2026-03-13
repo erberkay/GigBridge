@@ -1,7 +1,9 @@
 import React from 'react';
+import { View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { CardStyleInterpolators, createStackNavigator } from '@react-navigation/stack';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Colors } from '../theme';
 
 import CustomerHomeScreen from '../screens/customer/HomeScreen';
@@ -24,7 +26,7 @@ import MyReviewsScreen from '../screens/customer/MyReviewsScreen';
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
 
-const ACTIVE = Colors.customerColor ?? Colors.primary;
+const ACTIVE = '#FFFFFF';
 
 function CustomerTabs() {
   return (
@@ -39,24 +41,26 @@ function CustomerTabs() {
           fontWeight: '600',
           marginBottom: 4,
         },
+        tabBarBackground: () => (
+          <LinearGradient
+            colors={['rgba(10,11,14,0.55)', 'rgba(10,11,14,0.97)']}
+            style={{ flex: 1 }}
+            start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
+          />
+        ),
         tabBarStyle: {
           position: 'absolute',
-          bottom: 20,
-          left: 20,
-          right: 20,
-          borderRadius: 24,
-          backgroundColor: '#13131E',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          borderRadius: 0,
+          backgroundColor: 'transparent',
           borderTopWidth: 1,
-          borderTopColor: 'rgba(255,255,255,0.06)',
-          borderWidth: 1,
-          borderColor: 'rgba(255,255,255,0.07)',
-          height: 70,
+          borderTopColor: 'rgba(168,85,247,0.25)',
+          height: 80,
+          paddingBottom: 16,
           paddingTop: 8,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 10 },
-          shadowOpacity: 0.4,
-          shadowRadius: 20,
-          elevation: 16,
+          elevation: 20,
         },
       }}
     >
@@ -66,7 +70,10 @@ function CustomerTabs() {
         options={{
           tabBarLabel: 'Keşfet',
           tabBarIcon: ({ focused, color }) => (
-            <Ionicons name={focused ? 'compass' : 'compass-outline'} size={24} color={color} />
+            <View style={{ alignItems: 'center' }}>
+              {focused && <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: ACTIVE, marginBottom: 2 }} />}
+              <Ionicons name={focused ? 'compass' : 'compass-outline'} size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -76,7 +83,10 @@ function CustomerTabs() {
         options={{
           tabBarLabel: 'Harita',
           tabBarIcon: ({ focused, color }) => (
-            <Ionicons name={focused ? 'map' : 'map-outline'} size={24} color={color} />
+            <View style={{ alignItems: 'center' }}>
+              {focused && <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: ACTIVE, marginBottom: 2 }} />}
+              <Ionicons name={focused ? 'map' : 'map-outline'} size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -86,7 +96,10 @@ function CustomerTabs() {
         options={{
           tabBarLabel: 'Akış',
           tabBarIcon: ({ focused, color }) => (
-            <Ionicons name={focused ? 'newspaper' : 'newspaper-outline'} size={24} color={color} />
+            <View style={{ alignItems: 'center' }}>
+              {focused && <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: ACTIVE, marginBottom: 2 }} />}
+              <Ionicons name={focused ? 'newspaper' : 'newspaper-outline'} size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -96,7 +109,10 @@ function CustomerTabs() {
         options={{
           tabBarLabel: 'Mesajlar',
           tabBarIcon: ({ focused, color }) => (
-            <Ionicons name={focused ? 'chatbubbles' : 'chatbubbles-outline'} size={24} color={color} />
+            <View style={{ alignItems: 'center' }}>
+              {focused && <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: ACTIVE, marginBottom: 2 }} />}
+              <Ionicons name={focused ? 'chatbubbles' : 'chatbubbles-outline'} size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -106,7 +122,10 @@ function CustomerTabs() {
         options={{
           tabBarLabel: 'Profil',
           tabBarIcon: ({ focused, color }) => (
-            <Ionicons name={focused ? 'person-circle' : 'person-circle-outline'} size={24} color={color} />
+            <View style={{ alignItems: 'center' }}>
+              {focused && <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: ACTIVE, marginBottom: 2 }} />}
+              <Ionicons name={focused ? 'person-circle' : 'person-circle-outline'} size={22} color={color} />
+            </View>
           ),
         }}
       />

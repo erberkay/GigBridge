@@ -30,7 +30,8 @@ export const Colors = {
   gradientEnd: '#6366F1',
 
   // Kullanıcı tipi renkleri
-  customerColor: '#06B6D4',   // Cyan - müşteri
-  artistColor: '#A855F7',     // Mor - sanatçı
-  venueColor: '#F59E0B',      // Amber - mekan
+  customerColor: '#06B6D4',    // Cyan - müşteri
+  artistColor: '#A855F7',      // Mor - sanatçı
+  venueColor: '#F59E0B',       // Amber - mekan
+  organizerColor: '#F43F5E',   // Rose - organizatör
 };

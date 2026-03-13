@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,9 +8,10 @@ import { useAuthStore } from '../../store/authStore';
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 export default function WelcomeScreen({ navigation }: any) {
-  const { setUser } = useAuthStore();
+  // Selector ile sadece gerekli fonksiyonu subscribe et — tüm store değişimlerinde re-render önlenir
+  const setUser = useAuthStore((s) => s.setUser);
 
-  const handleDevLogin = () => {
+  const handleDevLogin = useCallback(() => {
     Alert.alert('Demo Giriş', 'Hangi kullanıcı tipiyle girmek istersin?', [
       {
         text: 'Müşteri',
@@ -24,9 +25,13 @@ export default function WelcomeScreen({ navigation }: any) {
         text: 'Mekan',
         onPress: () => setUser({ userId: 'demo_venue', email: 'venue@gigbridge.app', displayName: 'Demo Mekan', userType: 'venue' }),
       },
+      {
+        text: 'Organizatör',
+        onPress: () => setUser({ userId: 'demo_organizer', email: 'organizer@gigbridge.app', displayName: 'Demo Organizatör', userType: 'organizer', orgId: 'demo_org_1', orgRole: 'owner', orgName: 'Demo Organizasyon' }),
+      },
       { text: 'İptal', style: 'cancel' },
     ]);
-  };
+  }, [setUser]);
 
   return (
     <View style={styles.container}>
@@ -95,9 +100,12 @@ export default function WelcomeScreen({ navigation }: any) {
           {"'nı kabul etmiş olursunuz."}
         </Text>
 
-        <TouchableOpacity onPress={handleDevLogin} style={styles.devLoginBtn}>
-          <Text style={styles.devLoginText}>Geliştirici Girişi</Text>
-        </TouchableOpacity>
+        {/* Yalnızca geliştirme ortamında göster */}
+        {__DEV__ && (
+          <TouchableOpacity onPress={handleDevLogin} style={styles.devLoginBtn}>
+            <Text style={styles.devLoginText}>Geliştirici Girişi</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

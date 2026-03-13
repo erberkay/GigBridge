@@ -1,13 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, query, where, getDocs, orderBy, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+// ERR-ANALYTICS-001 Firestore sorgu hatası
+const ERR = { FIRESTORE_QUERY: 'ERR-ANALYTICS-001' } as const;
 
 const { width } = Dimensions.get('window');
 const PERIODS = ['Bu Hafta', 'Bu Ay', '3 Ay', '1 Yıl'];
@@ -98,7 +101,7 @@ const AVATAR_COLORS: [string, string][] = [
   ['#C5713F', '#8B4A1A'], ['#3F8BC5', '#1A5A8B'], ['#8B3FC5', '#5A1A8B'],
 ];
 function getAvatarGrad(name: string): [string, string] {
-  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length];
+  return AVATAR_COLORS[((name?.charCodeAt(0) || 65)) % AVATAR_COLORS.length];
 }
 
 function getPeriodStart(period: string): Date {
@@ -112,20 +115,17 @@ function getPeriodStart(period: string): Date {
 }
 
 export default function AnalyticsScreen() {
-  const { userId } = useAuthStore();
+  const userId = useAuthStore((s) => s.userId);
   const [selectedPeriod, setSelectedPeriod] = useState('Bu Ay');
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState({ totalAttendance: 0, avgNight: 0, totalRevenue: 0, avgRating: 0, newCustomers: 0, repeatRate: 0, cancelRate: 0 });
   const [genreData, setGenreData] = useState<{ genre: string; percent: number; color: string }[]>([]);
   const [artistPerfs, setArtistPerfs] = useState<any[]>([]);
   const [reviewStats, setReviewStats] = useState({ avg: 0, distribution: [0, 0, 0, 0, 0], total: 0 });
+  const [recentReviews, setRecentReviews] = useState(DEMO_RECENT_REVIEWS);
 
-  useEffect(() => {
+  const loadAnalytics = useCallback(async () => {
     if (!userId) return;
-    loadAnalytics();
-  }, [userId, selectedPeriod]);
-
-  const loadAnalytics = async () => {
     setLoading(true);
     try {
       const since = Timestamp.fromDate(getPeriodStart(selectedPeriod));
@@ -142,7 +142,7 @@ export default function AnalyticsScreen() {
         const g = e.genre?.[0] ?? 'Diğer';
         genreCount[g] = (genreCount[g] ?? 0) + (e.attendeeCount ?? 0);
       });
-      const totalForGenre = Object.values(genreCount).reduce((a, b) => a + b, 1);
+      const totalForGenre = Math.max(1, Object.values(genreCount).reduce((a, b) => a + b, 0));
       const genreBreakdown = Object.entries(genreCount)
         .sort((a, b) => b[1] - a[1]).slice(0, 4)
         .map(([genre, count]) => ({ genre, percent: Math.round((count / totalForGenre) * 100), color: GENRE_COLORS[genre] ?? Colors.textMuted }));
@@ -163,13 +163,13 @@ export default function AnalyticsScreen() {
       const dist = [0, 0, 0, 0, 0];
       let ratingSum = 0;
       reviews.forEach((r) => {
-        const star = Math.round(r.overall ?? r.rating ?? 0);
+        const star = Math.round(r.overallRating ?? 0);
         if (star >= 1 && star <= 5) dist[star - 1]++;
-        ratingSum += r.overall ?? r.rating ?? 0;
+        ratingSum += r.overallRating ?? 0;
       });
       const avgRating = reviews.length > 0 ? ratingSum / reviews.length : 0;
       const total = reviews.length || 1;
-      const distPercent = dist.reverse().map((v) => Math.round((v / total) * 100));
+      const distPercent = [...dist].reverse().map((v) => Math.round((v / total) * 100));
 
       const hasRealData = events.length > 0 || reviews.length > 0;
       const demo = DEMO_METRICS[selectedPeriod as keyof typeof DEMO_METRICS] ?? DEMO_METRICS['Bu Ay'];
@@ -178,13 +178,23 @@ export default function AnalyticsScreen() {
         setGenreData(genreBreakdown.length > 0 ? genreBreakdown : DEMO_GENRE_DATA);
         setArtistPerfs(topArtists.length > 0 ? topArtists : DEMO_ARTISTS_BY_PERIOD[selectedPeriod] ?? []);
         setReviewStats({ avg: parseFloat(avgRating.toFixed(1)), distribution: distPercent, total: reviews.length });
+        if (reviews.length > 0) {
+          setRecentReviews(reviews.slice(0, 3).map((r) => ({
+            author: r.isAnonymous ? 'Anonim Sanatçı' : (r.artistName ?? 'Anonim'),
+            rating: Math.round(r.overallRating ?? 0),
+            text: r.comment ?? r.text ?? '',
+            time: r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString('tr-TR') : 'Yakın zamanda',
+          })));
+        }
       } else {
         setMetrics(demo);
         setGenreData(DEMO_GENRE_DATA);
         setArtistPerfs(DEMO_ARTISTS_BY_PERIOD[selectedPeriod] ?? []);
         setReviewStats(DEMO_REVIEWS);
+        setRecentReviews(DEMO_RECENT_REVIEWS);
       }
     } catch {
+      console.warn(`[${ERR.FIRESTORE_QUERY}] Analytics verisi yüklenemedi, demo gösteriliyor.`);
       const demo = DEMO_METRICS[selectedPeriod as keyof typeof DEMO_METRICS] ?? DEMO_METRICS['Bu Ay'];
       setMetrics(demo);
       setGenreData(DEMO_GENRE_DATA);
@@ -193,7 +203,11 @@ export default function AnalyticsScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [userId, selectedPeriod]);
+
+  useEffect(() => {
+    loadAnalytics();
+  }, [loadAnalytics]);
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -212,7 +226,7 @@ export default function AnalyticsScreen() {
       </ScrollView>
 
       {loading ? (
-        <ActivityIndicator color={Colors.venueColor} style={{ marginTop: 40 }} />
+        <ActivityIndicator color={Colors.venueColor} style={styles.loader} />
       ) : (
         <>
           {/* Ana metrikler — 2x2 grid */}
@@ -224,7 +238,7 @@ export default function AnalyticsScreen() {
           </View>
 
           {/* İkincil metrikler */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.secondaryMetrics} style={{ marginBottom: Spacing.lg }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.secondaryMetrics} style={styles.secondaryMetricsScroll}>
             <SecondaryMetric iconName="person-add-outline" label="Yeni Müşteri" value={metrics.newCustomers.toLocaleString('tr-TR')} />
             <SecondaryMetric iconName="refresh-outline" label="Tekrar Ziyaret" value={`%${metrics.repeatRate}`} />
             <SecondaryMetric iconName="close-circle-outline" label="İptal Oranı" value={`%${metrics.cancelRate}`} valueColor={Colors.error} />
@@ -235,7 +249,7 @@ export default function AnalyticsScreen() {
           {/* Haftalık doluluk grafiği */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="bar-chart-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="bar-chart-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Günlük Doluluk Trendi</Text>
             </View>
             <View style={styles.barChartCard}>
@@ -257,7 +271,7 @@ export default function AnalyticsScreen() {
           {/* Peak saatler */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="time-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="time-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Yoğun Saatler</Text>
             </View>
             <View style={styles.peakCard}>
@@ -276,7 +290,7 @@ export default function AnalyticsScreen() {
           {/* Müzik türü dağılımı */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="musical-notes-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="musical-notes-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Müzik Türü Dağılımı</Text>
             </View>
             <View style={styles.genreCard}>
@@ -295,23 +309,23 @@ export default function AnalyticsScreen() {
           {/* Cinsiyet ve yaş dağılımı */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="people-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="people-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Kitle Demografisi</Text>
             </View>
             <View style={styles.demoCard}>
               <View style={styles.demoRow}>
                 <Text style={styles.demoLabel}>Cinsiyet</Text>
                 <View style={styles.genderBar}>
-                  <View style={[styles.genderSegment, { flex: 0.52, backgroundColor: Colors.primary }]} />
-                  <View style={[styles.genderSegment, { flex: 0.48, backgroundColor: Colors.customerColor }]} />
+                  <View style={[styles.genderSegment, styles.genderSegmentMale]} />
+                  <View style={[styles.genderSegment, styles.genderSegmentFemale]} />
                 </View>
                 <View style={styles.genderLegend}>
                   <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: Colors.primary }]} />
+                    <View style={[styles.legendDot, styles.legendDotMale]} />
                     <Text style={styles.legendText}>Erkek 52%</Text>
                   </View>
                   <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: Colors.customerColor }]} />
+                    <View style={[styles.legendDot, styles.legendDotFemale]} />
                     <Text style={styles.legendText}>Kadın 48%</Text>
                   </View>
                 </View>
@@ -321,7 +335,7 @@ export default function AnalyticsScreen() {
               <View style={styles.ageRow}>
                 {[{ label: '18-24', v: 28 }, { label: '25-34', v: 42 }, { label: '35-44', v: 21 }, { label: '45+', v: 9 }].map((a) => (
                   <View key={a.label} style={styles.ageItem}>
-                    <Text style={[styles.agePercent, { color: Colors.venueColor }]}>{a.v}%</Text>
+                    <Text style={styles.agePercent}>{a.v}%</Text>
                     <View style={styles.ageBarWrapper}>
                       <View style={[styles.ageBar, { height: `${a.v}%` as any }]} />
                     </View>
@@ -335,12 +349,12 @@ export default function AnalyticsScreen() {
           {/* Sanatçı performansları */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="mic-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="mic-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Sanatçı Performansları</Text>
             </View>
             {artistPerfs.length === 0 ? (
               <View style={styles.emptyArtists}>
-                <Ionicons name="mail-open-outline" size={20} color={Colors.textMuted} style={{ marginRight: 6 }} />
+                <Ionicons name="mail-open-outline" size={20} color={Colors.textMuted} style={styles.sectionIcon} />
                 <Text style={styles.emptyArtistsText}>Bu dönem için sanatçı verisi yok</Text>
               </View>
             ) : artistPerfs.map((artist, i) => (
@@ -350,7 +364,7 @@ export default function AnalyticsScreen() {
                 </View>
                 <View style={styles.artistPerfAvatar}>
                   <LinearGradient
-                    colors={GENRE_GRAD_COLORS[artist.genre] ?? ['#4A4A6A', '#2A2A4A']}
+                    colors={[...(GENRE_GRAD_COLORS[artist.genre] ?? ['#4A4A6A', '#2A2A4A'])] as [string, string]}
                     style={styles.artistPerfAvatarGrad}
                     start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
                   >
@@ -380,7 +394,7 @@ export default function AnalyticsScreen() {
           {/* Yorum analizi */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="star-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="star-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Yorum & Puanlama</Text>
             </View>
             <View style={styles.reviewAnalysisCard}>
@@ -414,16 +428,16 @@ export default function AnalyticsScreen() {
           {/* Son yorumlar */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="chatbubbles-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="chatbubbles-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Son Yorumlar</Text>
             </View>
-            {DEMO_RECENT_REVIEWS.map((rev, i) => (
+            {recentReviews.map((rev, i) => (
               <View key={i} style={styles.recentReviewCard}>
                 <View style={styles.recentRevTop}>
-                  <LinearGradient colors={getAvatarGrad(rev.author)} style={styles.recentRevAvatar}>
+                  <LinearGradient colors={[...getAvatarGrad(rev.author)]} style={styles.recentRevAvatar}>
                     <Text style={styles.recentRevAvatarText}>{rev.author.charAt(0).toUpperCase()}</Text>
                   </LinearGradient>
-                  <View style={{ flex: 1 }}>
+                  <View style={styles.recentRevContent}>
                     <Text style={styles.recentRevAuthor}>{rev.author}</Text>
                     <Text style={styles.recentRevTime}>{rev.time}</Text>
                   </View>
@@ -441,7 +455,7 @@ export default function AnalyticsScreen() {
           {/* Gelir özeti */}
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Ionicons name="cash-outline" size={16} color={Colors.venueColor} style={{ marginRight: 6 }} />
+              <Ionicons name="cash-outline" size={16} color={Colors.venueColor} style={styles.sectionIcon} />
               <Text style={styles.sectionTitle}>Gelir Özeti</Text>
             </View>
             <View style={styles.revenueCard}>
@@ -462,16 +476,16 @@ export default function AnalyticsScreen() {
                 </View>
               </View>
               <View style={styles.revenueBarRow}>
-                <View style={[styles.revenueBarSegment, { flex: 0.72, backgroundColor: Colors.success }]} />
-                <View style={[styles.revenueBarSegment, { flex: 0.21, backgroundColor: Colors.primary }]} />
-                <View style={[styles.revenueBarSegment, { flex: 0.07, backgroundColor: Colors.accent }]} />
+                <View style={[styles.revenueBarSegment, styles.revenueSegmentTickets]} />
+                <View style={[styles.revenueBarSegment, styles.revenueSegmentBar]} />
+                <View style={[styles.revenueBarSegment, styles.revenueSegmentVip]} />
               </View>
             </View>
           </View>
         </>
       )}
 
-      <View style={{ height: 120 }} />
+      <View style={styles.bottomSpacer} />
     </ScrollView>
   );
 }
@@ -480,7 +494,7 @@ function MetricCard({ label, value, iconName, color }: { label: string; value: s
   return (
     <View style={[styles.metricCard, { borderColor: color + '44' }]}>
       <LinearGradient colors={[color + '22', color + '08']} style={styles.metricGrad}>
-        <Ionicons name={iconName} size={22} color={color} style={{ marginBottom: 8 }} />
+        <Ionicons name={iconName} size={22} color={color} style={styles.metricIcon} />
         <Text style={[styles.metricValue, { color }]}>{value}</Text>
         <Text style={styles.metricLabel}>{label}</Text>
       </LinearGradient>
@@ -491,8 +505,8 @@ function MetricCard({ label, value, iconName, color }: { label: string; value: s
 function SecondaryMetric({ iconName, label, value, valueColor }: { iconName: IoniconName; label: string; value: string; valueColor?: string }) {
   return (
     <View style={styles.secondaryMetricCard}>
-      <Ionicons name={iconName} size={18} color={Colors.venueColor} style={{ marginBottom: 4 }} />
-      <Text style={[styles.secMetricValue, valueColor ? { color: valueColor } : {}]}>{value}</Text>
+      <Ionicons name={iconName} size={18} color={Colors.venueColor} style={styles.secMetricIcon} />
+      <Text style={[styles.secMetricValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
       <Text style={styles.secMetricLabel}>{label}</Text>
     </View>
   );
@@ -503,17 +517,18 @@ const styles = StyleSheet.create({
   header: { paddingTop: 56, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.lg },
   headerTitle: { fontSize: FontSize.xxl, fontWeight: '800', color: Colors.text },
   headerSub: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 4 },
-  periodScroll: { marginBottom: Spacing.md },
-  periodContent: { paddingHorizontal: Spacing.lg, gap: 8 },
+  periodScroll: { marginBottom: Spacing.md, flexGrow: 0 },
+  periodContent: { paddingHorizontal: Spacing.lg, gap: 8, paddingVertical: 4, alignItems: 'center' },
   periodChip: {
-    paddingHorizontal: 16, paddingVertical: 8,
+    paddingHorizontal: 10, paddingVertical: 5,
+    alignSelf: 'flex-start',
     borderRadius: BorderRadius.full,
     borderWidth: 1, borderColor: Colors.border,
     backgroundColor: Colors.surfaceAlt,
   },
   periodChipActive: { backgroundColor: Colors.venueColor, borderColor: Colors.venueColor },
-  periodText: { color: Colors.textSecondary, fontSize: FontSize.sm },
-  periodTextActive: { color: '#fff', fontWeight: '700' },
+  periodText: { color: Colors.textSecondary, fontSize: 11, lineHeight: 15, fontWeight: '600' },
+  periodTextActive: { color: '#fff' },
 
   metricsGrid: {
     flexDirection: 'row', flexWrap: 'wrap',
@@ -602,7 +617,7 @@ const styles = StyleSheet.create({
   divider: { height: 1, backgroundColor: Colors.border, marginVertical: 14 },
   ageRow: { flexDirection: 'row', gap: 12, height: 80, alignItems: 'flex-end' },
   ageItem: { flex: 1, alignItems: 'center', height: '100%', justifyContent: 'flex-end' },
-  agePercent: { fontSize: 10, fontWeight: '700', marginBottom: 4 },
+  agePercent: { fontSize: 10, fontWeight: '700', marginBottom: 4, color: Colors.venueColor },
   ageBarWrapper: { width: '100%', flex: 1, justifyContent: 'flex-end' },
   ageBar: { width: '100%', backgroundColor: Colors.venueColor + 'AA', borderRadius: 4 },
   ageLabel: { color: Colors.textMuted, fontSize: 9, marginTop: 4, textAlign: 'center' },
@@ -686,4 +701,18 @@ const styles = StyleSheet.create({
   revenueDivider: { width: 1, backgroundColor: Colors.border },
   revenueBarRow: { flexDirection: 'row', height: 8, borderRadius: 4, overflow: 'hidden', gap: 1 },
   revenueBarSegment: { height: 8 },
+  revenueSegmentTickets: { flex: 0.72, backgroundColor: Colors.success },
+  revenueSegmentBar: { flex: 0.21, backgroundColor: Colors.primary },
+  revenueSegmentVip: { flex: 0.07, backgroundColor: Colors.accent },
+  genderSegmentMale: { flex: 0.52, backgroundColor: Colors.primary },
+  genderSegmentFemale: { flex: 0.48, backgroundColor: Colors.customerColor },
+  legendDotMale: { backgroundColor: Colors.primary },
+  legendDotFemale: { backgroundColor: Colors.customerColor },
+  loader: { marginTop: 40 },
+  secondaryMetricsScroll: { marginBottom: Spacing.lg },
+  sectionIcon: { marginRight: 6 },
+  recentRevContent: { flex: 1 },
+  bottomSpacer: { height: 120 },
+  metricIcon: { marginBottom: 8 },
+  secMetricIcon: { marginBottom: 4 },
 });

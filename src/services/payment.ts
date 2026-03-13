@@ -57,18 +57,18 @@ export async function confirmPayment(paymentId: string, token: string): Promise<
 // Plan bilgileri
 export const PRO_PLANS = [
   {
-    id: 'monthly',
-    label: 'Aylık',
-    price: 4900,       // 49 TL
-    priceLabel: '₺49/ay',
-    description: 'Aylık yenilenebilir abonelik',
+    id: 'pro',
+    label: 'Pro',
+    price: 20000,      // 200 TL
+    priceLabel: '₺200/ay',
+    description: 'Aylık Pro aboneliği',
   },
   {
-    id: 'yearly',
-    label: 'Yıllık',
-    price: 39900,      // 399 TL
-    priceLabel: '₺399/yıl',
-    description: 'Yıllık abonelik (%32 tasarruf)',
+    id: 'plus',
+    label: 'Plus',
+    price: 80000,      // 800 TL
+    priceLabel: '₺800/ay',
+    description: 'Aylık Plus aboneliği — tüm Pro özellikleri dahil',
     badge: 'EN İYİ',
   },
 ];

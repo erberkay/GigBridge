@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, Alert, Modal, KeyboardAvoidingView, Platform,
@@ -6,7 +6,16 @@ import {
 
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+// ERR-VENUE-001 Yorum gönderilemedi  ERR-VENUE-002 Kimlik doğrulama eksik
+// ERR-VENUE-003 Puan seçilmedi       ERR-VENUE-004 Yorum metni çok kısa
+const ERR = {
+  REVIEW_FAILED:     'ERR-VENUE-001',
+  NOT_AUTHENTICATED: 'ERR-VENUE-002',
+  NO_RATING:         'ERR-VENUE-003',
+  REVIEW_TOO_SHORT:  'ERR-VENUE-004',
+} as const;
+
+import { collection, addDoc, serverTimestamp, doc, setDoc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
@@ -18,46 +27,88 @@ const VENUE_REVIEWS = [
   { id: '3', author: 'Can B.', rating: 5, comment: 'Istanbul\'un en iyi kulüplerinden biri. Kesinlikle tavsiye ederim.', date: '2 hafta önce' },
 ];
 
-export default function VenueDetailScreen({ route, navigation }: any) {
-  const { venue } = route.params ?? {
-    venue: { name: 'Mekan', city: 'İstanbul', emoji: '🏢', rating: 4.5, capacity: 500, genre: 'Çeşitli' },
-  };
-  const { userId, displayName } = useAuthStore();
-  const [showReviewModal, setShowReviewModal] = useState(false);
-  const [selectedRating, setSelectedRating] = useState(0);
-  const [reviewText, setReviewText] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+const DEFAULT_VENUE = { name: 'Mekan', city: 'İstanbul', rating: 4.5, capacity: 500, genre: 'Çeşitli' };
 
-  const handleSubmitReview = async () => {
+export default function VenueDetailScreen({ route, navigation }: any) {
+  const venue = { ...DEFAULT_VENUE, ...(route.params?.venue ?? {}) };
+  const userId      = useAuthStore((s) => s.userId);
+  const displayName = useAuthStore((s) => s.displayName);
+
+  const venueId = venue.id ?? venue.name;
+
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [selectedRating, setSelectedRating]   = useState(0);
+  const [reviewText, setReviewText]           = useState('');
+  const [submitting, setSubmitting]           = useState(false);
+  const [reviews, setReviews]                 = useState<typeof VENUE_REVIEWS>([]);
+  const [saved, setSaved]                     = useState(false);
+
+  useEffect(() => {
+    const q = query(collection(db, 'reviews'), where('targetId', '==', venueId), where('targetType', '==', 'venue'));
+    const unsub = onSnapshot(q, (snap) => {
+      if (snap.empty) { setReviews([]); return; }
+      setReviews(snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          author: data.authorName ?? 'Anonim',
+          rating: data.rating ?? 0,
+          comment: data.comment ?? '',
+          date: data.createdAt?.toDate ? data.createdAt.toDate().toLocaleDateString('tr-TR') : 'Yakın zamanda',
+        };
+      }));
+    }, (err) => console.warn('[VenueDetail] reviews onSnapshot hatası:', err));
+    return () => unsub();
+  }, [venueId]);
+
+  const handleSave = useCallback(async () => {
+    if (!userId) { Alert.alert('Giriş Gerekli', 'Favori eklemek için giriş yapmalısınız.'); return; }
+    try {
+      await setDoc(doc(db, 'users', userId, 'favorites', venueId), {
+        venueId, venueName: venue.name, city: venue.city ?? '', addedAt: serverTimestamp(),
+      });
+      setSaved(true);
+      Alert.alert('Kaydedildi', 'Mekan favorilerinize eklendi.');
+    } catch {
+      Alert.alert('Hata', 'Favorilere eklenemedi.');
+    }
+  }, [userId, venueId, venue.name, venue.city]);
+
+  const handleSubmitReview = useCallback(async () => {
+    if (!userId) {
+      Alert.alert('Giriş Gerekli', `Yorum yapabilmek için giriş yapmalısınız. (${ERR.NOT_AUTHENTICATED})`);
+      return;
+    }
     if (selectedRating === 0) {
-      Alert.alert('Hata', 'Lütfen bir puan seçin.');
+      Alert.alert('Puan Seçin', `Lütfen bir puan seçin. (${ERR.NO_RATING})`);
       return;
     }
     if (reviewText.trim().length < 10) {
-      Alert.alert('Hata', 'Yorum en az 10 karakter olmalı.');
+      Alert.alert('Yorum Çok Kısa', `Yorum en az 10 karakter olmalı. (${ERR.REVIEW_TOO_SHORT})`);
       return;
     }
     setSubmitting(true);
     try {
       await addDoc(collection(db, 'reviews'), {
-        authorId: userId,
+        authorId:   userId,
         authorName: displayName,
-        targetId: venue.id ?? venue.name,
+        targetId:   venueId,
+        targetName: venue.name,
         targetType: 'venue',
-        rating: selectedRating,
-        comment: reviewText.trim(),
-        createdAt: serverTimestamp(),
+        rating:     selectedRating,
+        comment:    reviewText.trim(),
+        createdAt:  serverTimestamp(),
       });
       Alert.alert('Teşekkürler!', 'Yorumunuz başarıyla gönderildi.');
       setShowReviewModal(false);
       setSelectedRating(0);
       setReviewText('');
     } catch {
-      Alert.alert('Hata', 'Yorum gönderilemedi. Tekrar deneyin.');
+      Alert.alert('Hata', `Yorum gönderilemedi. Tekrar deneyin. (${ERR.REVIEW_FAILED})`);
     } finally {
       setSubmitting(false);
     }
-  };
+  }, [userId, displayName, selectedRating, reviewText, venueId]);
 
   return (
     <View style={styles.container}>
@@ -70,22 +121,22 @@ export default function VenueDetailScreen({ route, navigation }: any) {
           <View style={styles.venueHero}>
             <View style={styles.avatarWrapper}>
               <LinearGradient
-                colors={[Colors.venueColor, '#0A7A9E']}
+                colors={['#7C3AED', '#4C1D95']}
                 style={styles.avatar}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
               >
-                <Text style={styles.avatarInitial}>{venue.name?.charAt(0).toUpperCase() ?? '🏢'}</Text>
+                <Text style={styles.avatarInitial}>{venue.name?.charAt(0).toUpperCase() ?? 'M'}</Text>
               </LinearGradient>
             </View>
             <Text style={styles.venueName}>{venue.name}</Text>
             <View style={styles.cityRow}>
-              <Ionicons name="location-outline" size={13} color={Colors.venueColor} />
+              <Ionicons name="location-outline" size={13} color="#A78BFA" />
               <Text style={styles.venueCity}>{venue.city ?? 'İstanbul'}</Text>
             </View>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                <View style={styles.statRatingRow}>
                   <Ionicons name="star" size={14} color={Colors.accent} />
                   <Text style={styles.statValue}>{venue.rating ?? '4.5'}</Text>
                 </View>
@@ -98,7 +149,7 @@ export default function VenueDetailScreen({ route, navigation }: any) {
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Text style={styles.statValue}>{VENUE_REVIEWS.length}</Text>
+                <Text style={styles.statValue}>{reviews.length}</Text>
                 <Text style={styles.statLabel}>Yorum</Text>
               </View>
             </View>
@@ -107,14 +158,14 @@ export default function VenueDetailScreen({ route, navigation }: any) {
 
         {/* Aksiyonlar */}
         <View style={styles.actions}>
-          <PressableScale style={styles.saveBtn} onPress={() => Alert.alert('Kaydedildi', 'Mekan favorilerinize eklendi.')} scaleTo={0.96}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="bookmark-outline" size={16} color={Colors.venueColor} />
+          <PressableScale style={[styles.saveBtn, saved && { borderColor: 'rgba(16,185,129,0.4)', backgroundColor: 'rgba(16,185,129,0.08)' }]} onPress={handleSave} scaleTo={0.96}>
+            <View style={styles.btnInner}>
+              <Ionicons name={saved ? 'bookmark' : 'bookmark-outline'} size={16} color={saved ? '#34D399' : '#A78BFA'} />
               <Text style={styles.saveBtnText}>Kaydet</Text>
             </View>
           </PressableScale>
           <PressableScale style={styles.reviewBtn} onPress={() => setShowReviewModal(true)} scaleTo={0.96}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={styles.btnInner}>
               <Ionicons name="star-outline" size={16} color="#fff" />
               <Text style={styles.reviewBtnText}>Puan Ver</Text>
             </View>
@@ -142,7 +193,7 @@ export default function VenueDetailScreen({ route, navigation }: any) {
               { iconName: 'camera-outline', label: 'Fotoğraf Alanı' },
             ] as { iconName: React.ComponentProps<typeof Ionicons>['name']; label: string }[]).map((f) => (
               <View key={f.label} style={styles.featureItem}>
-                <Ionicons name={f.iconName} size={16} color={Colors.venueColor} />
+                <Ionicons name={f.iconName} size={16} color={Colors.textSecondary} />
                 <Text style={styles.featureLabel}>{f.label}</Text>
               </View>
             ))}
@@ -169,7 +220,13 @@ export default function VenueDetailScreen({ route, navigation }: any) {
               <Text style={styles.addReview}>+ Yorum Yap</Text>
             </TouchableOpacity>
           </View>
-          {VENUE_REVIEWS.map((review) => (
+          {reviews.length === 0 && (
+            <View style={styles.emptyReviews}>
+              <Ionicons name="star-outline" size={32} color={Colors.textMuted} />
+              <Text style={styles.emptyReviewsText}>Henüz yorum yok.</Text>
+            </View>
+          )}
+          {reviews.map((review) => (
             <View key={review.id} style={styles.reviewCard}>
               <View style={styles.reviewTop}>
                 <View style={styles.reviewAuthorRow}>
@@ -181,7 +238,7 @@ export default function VenueDetailScreen({ route, navigation }: any) {
                     <Text style={styles.reviewDate}>{review.date}</Text>
                   </View>
                 </View>
-                <View style={{ flexDirection: 'row', gap: 2 }}>
+                <View style={styles.reviewStars}>
                   {Array.from({ length: review.rating }).map((_, i) => (
                     <Ionicons key={i} name="star" size={12} color={Colors.accent} />
                   ))}
@@ -192,7 +249,7 @@ export default function VenueDetailScreen({ route, navigation }: any) {
           ))}
         </View>
 
-        <View style={{ height: 80 }} />
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
       {/* Puan/Yorum Modal */}
@@ -204,7 +261,7 @@ export default function VenueDetailScreen({ route, navigation }: any) {
 
             <View style={styles.starRow}>
               {[1, 2, 3, 4, 5].map((star) => (
-                <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} style={{ padding: 4 }}>
+                <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} style={styles.starBtn}>
                   <Ionicons name={star <= selectedRating ? 'star' : 'star-outline'} size={36} color={star <= selectedRating ? Colors.accent : Colors.textMuted} />
                 </TouchableOpacity>
               ))}
@@ -226,7 +283,7 @@ export default function VenueDetailScreen({ route, navigation }: any) {
                 <Text style={styles.cancelBtnText}>İptal</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+                style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
                 onPress={handleSubmitReview}
                 disabled={submitting}
               >
@@ -244,11 +301,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   header: { paddingTop: 56, paddingBottom: Spacing.xl },
   backBtn: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.md },
-  backText: {},
   venueHero: { alignItems: 'center', paddingHorizontal: Spacing.lg },
   avatarWrapper: {
     marginBottom: Spacing.md,
-    shadowColor: Colors.venueColor,
+    shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.5,
     shadowRadius: 12,
@@ -264,14 +320,16 @@ const styles = StyleSheet.create({
   cityRow: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     paddingHorizontal: 14, paddingVertical: 5,
-    backgroundColor: Colors.venueColor + '22',
+    backgroundColor: 'rgba(109,40,217,0.13)',
     borderRadius: BorderRadius.full,
-    borderWidth: 1, borderColor: Colors.venueColor + '44',
+    borderWidth: 1, borderColor: 'rgba(109,40,217,0.3)',
     marginBottom: Spacing.lg,
   },
-  venueCity: { color: Colors.venueColor, fontSize: FontSize.sm, fontWeight: '600' },
+  venueCity: { color: '#A78BFA', fontSize: FontSize.sm, fontWeight: '600' },
   statsRow: { flexDirection: 'row', alignItems: 'center' },
   statItem: { alignItems: 'center', paddingHorizontal: 24 },
+  statRatingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   statValue: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: 2 },
   statLabel: { color: Colors.textMuted, fontSize: FontSize.xs },
   statDivider: { width: 1, height: 32, backgroundColor: Colors.border },
@@ -284,24 +342,28 @@ const styles = StyleSheet.create({
   saveBtn: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: BorderRadius.md,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: Colors.venueColor,
+    borderColor: 'rgba(109,40,217,0.35)',
+    backgroundColor: 'rgba(109,40,217,0.07)',
     alignItems: 'center',
   },
-  saveBtnText: { color: Colors.venueColor, fontSize: FontSize.md, fontWeight: '700' },
+  saveBtnText: { color: '#A78BFA', fontSize: 13, fontWeight: '700' },
   reviewBtn: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.venueColor,
+    borderRadius: 10,
+    backgroundColor: '#5B21B6',
     alignItems: 'center',
   },
-  reviewBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  reviewBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.lg },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
-  sectionTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: Spacing.md },
-  addReview: { color: Colors.venueColor, fontSize: FontSize.sm },
+  sectionTitle: {
+    color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: Spacing.md,
+    paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: Colors.primary,
+  },
+  addReview: { color: '#A78BFA', fontSize: FontSize.sm },
   bio: { color: Colors.textSecondary, fontSize: FontSize.md, lineHeight: 24 },
   featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   featureItem: {
@@ -311,16 +373,15 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full,
     borderWidth: 1, borderColor: Colors.border,
   },
-  featureIcon: {},
   featureLabel: { color: Colors.textSecondary, fontSize: FontSize.sm },
   genreTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   genreTag: {
     paddingHorizontal: 14, paddingVertical: 6,
-    backgroundColor: Colors.venueColor + '22',
+    backgroundColor: 'rgba(109,40,217,0.13)',
     borderRadius: BorderRadius.full,
-    borderWidth: 1, borderColor: Colors.venueColor + '44',
+    borderWidth: 1, borderColor: 'rgba(109,40,217,0.3)',
   },
-  genreTagText: { color: Colors.venueColor, fontSize: FontSize.sm, fontWeight: '600' },
+  genreTagText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: '600' },
   reviewCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.md,
@@ -332,13 +393,12 @@ const styles = StyleSheet.create({
   reviewAuthorRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   reviewAvatar: {
     width: 36, height: 36, borderRadius: 18,
-    backgroundColor: Colors.venueColor + '33',
+    backgroundColor: 'rgba(109,40,217,0.18)',
     alignItems: 'center', justifyContent: 'center',
   },
-  reviewAvatarText: { color: Colors.venueColor, fontSize: FontSize.md, fontWeight: '700' },
+  reviewAvatarText: { color: '#A78BFA', fontSize: FontSize.md, fontWeight: '700' },
   reviewAuthor: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '600' },
   reviewDate: { color: Colors.textMuted, fontSize: FontSize.xs },
-  reviewRating: { fontSize: 12 },
   reviewComment: { color: Colors.textSecondary, fontSize: FontSize.sm, lineHeight: 20 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   modalContent: {
@@ -349,7 +409,6 @@ const styles = StyleSheet.create({
   modalTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: '800', marginBottom: 4 },
   modalSubtitle: { color: Colors.textSecondary, fontSize: FontSize.md, marginBottom: Spacing.lg },
   starRow: { flexDirection: 'row', gap: 12, marginBottom: Spacing.lg },
-  starIcon: {},
   reviewInput: {
     backgroundColor: Colors.surfaceAlt,
     borderRadius: BorderRadius.md,
@@ -362,17 +421,24 @@ const styles = StyleSheet.create({
   },
   modalButtons: { flexDirection: 'row', gap: 12 },
   cancelBtn: {
-    flex: 1, paddingVertical: 14,
-    borderRadius: BorderRadius.md,
+    flex: 1, paddingVertical: 13,
+    borderRadius: 10,
     borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt,
     alignItems: 'center',
   },
   cancelBtnText: { color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: '600' },
   submitBtn: {
-    flex: 1, paddingVertical: 14,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.venueColor,
+    flex: 1, paddingVertical: 13,
+    borderRadius: 10,
+    backgroundColor: '#5B21B6',
     alignItems: 'center',
   },
   submitBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  submitBtnDisabled: { opacity: 0.6 },
+  reviewStars: { flexDirection: 'row', gap: 2 },
+  bottomSpacer: { height: 80 },
+  emptyReviews: { alignItems: 'center', paddingVertical: 24, gap: 8 },
+  emptyReviewsText: { color: Colors.textMuted, fontSize: FontSize.sm },
+  starBtn: { padding: 4 },
 });

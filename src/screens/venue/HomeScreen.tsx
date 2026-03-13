@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert } from 'react-native';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Alert, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { collection, query, where, onSnapshot, getDocs, limit } from 'firebase/firestore';
+import { db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '../../theme';
 import { PressableScale } from '../../components/common/PressableScale';
@@ -18,9 +20,9 @@ const GENRE_COLORS: Record<string, [string, string]> = {
 };
 
 const ARTIST_SUGGESTIONS = [
-  { id: '1', name: 'DJ Armin',      genre: 'Electronic', rating: 4.9, price: '₺4.500', attendance: '+%30' },
-  { id: '2', name: 'Kerem Görsev',  genre: 'Jazz',       rating: 4.8, price: '₺3.200', attendance: '+%25' },
-  { id: '3', name: 'Koray Avcı',    genre: 'Pop Rock',   rating: 4.7, price: '₺6.000', attendance: '+%40' },
+  { id: '1', name: 'DJ Armin',      genre: 'Electronic', rating: 4.9, price: '₺4.500', attendance: '+30%' },
+  { id: '2', name: 'Kerem Görsev',  genre: 'Jazz',       rating: 4.8, price: '₺3.200', attendance: '+25%' },
+  { id: '3', name: 'Koray Avcı',    genre: 'Pop Rock',   rating: 4.7, price: '₺6.000', attendance: '+40%' },
 ];
 
 const RECENT_ANALYTICS = [
@@ -52,23 +54,112 @@ const QUICK_ACTIONS: { icon: IoniconName; label: string; colors: [string, string
 ];
 
 export default function VenueHomeScreen({ navigation }: any) {
-  const { displayName } = useAuthStore();
-  const [calendarVisible, setCalendarVisible] = useState(false);
+  const displayName = useAuthStore((s) => s.displayName);
+  const userId      = useAuthStore((s) => s.userId);
 
-  const handleQuickAction = (action: string) => {
+  const [calendarVisible, setCalendarVisible]         = useState(false);
+  const [venueEvents, setVenueEvents]                 = useState<any[]>([]);
+  const [artistSuggestions, setArtistSuggestions]     = useState<any[]>([]);
+  const [refreshing, setRefreshing]                   = useState(false);
+  const [reloadKey, setReloadKey]                     = useState(0);
+
+  // Mekanın kendi etkinliklerini Firestore'dan yükle
+  useEffect(() => {
+    if (!userId) return;
+    const q = query(collection(db, 'events'), where('venueId', '==', userId));
+    const unsub = onSnapshot(q, (snap) => {
+      if (snap.empty) return;
+      const loaded = snap.docs.map((d) => {
+        const data = d.data();
+        const genreRaw = Array.isArray(data.genre) ? data.genre[0] : data.genre;
+        const rawFee = data.fee ?? data.price;
+        return {
+          id:     d.id,
+          title:  data.title ?? '',
+          artist: data.artistName ?? data.artist ?? '',
+          date:   data.date ?? data.dateLabel ?? '',
+          time:   data.startTime ?? data.time ?? '',
+          status: ['upcoming', 'live'].includes(data.status) ? 'confirmed' : (data.status ?? 'pending'),
+          fee:    rawFee == null || rawFee === 0 ? 'Belirtilmemiş' : `₺${rawFee}`,
+          genre:  genreRaw ?? '',
+        };
+      });
+      setVenueEvents(loaded);
+    }, (err) => console.warn('[VenueHome] events:', err));
+    return () => unsub();
+  }, [userId, reloadKey]);
+
+  // Önerilen sanatçıları Firestore'dan yükle
+  useEffect(() => {
+    (async () => {
+      try {
+        const q = query(collection(db, 'users'), where('userType', '==', 'artist'), limit(3));
+        const snap = await getDocs(q);
+        if (snap.empty) return;
+        const loaded = snap.docs.map((d) => {
+          const data = d.data();
+          const genreRaw = Array.isArray(data.genres) ? data.genres[0] : (data.genre ?? '');
+          const priceMin = data.priceMin ?? data.price;
+          return {
+            id:         d.id,
+            name:       data.displayName ?? data.name ?? '',
+            genre:      genreRaw ?? '',
+            rating:     data.rating ?? 0,
+            price:      priceMin != null ? `₺${priceMin}` : '',
+            attendance: '—',
+          };
+        });
+        setArtistSuggestions(loaded);
+      } catch (err) { console.warn('[VenueHome] artists:', err); }
+    })();
+  }, [reloadKey]);
+
+  const activeEvents  = useMemo(
+    () => (venueEvents.length > 0 ? venueEvents : UPCOMING_EVENTS),
+    [venueEvents],
+  );
+  const activeArtists = useMemo(
+    () => (artistSuggestions.length > 0 ? artistSuggestions : ARTIST_SUGGESTIONS),
+    [artistSuggestions],
+  );
+
+  const confirmedCount = useMemo(
+    () => activeEvents.filter((e) => e.status === 'confirmed').length,
+    [activeEvents],
+  );
+  const monthlyRevenue = useMemo(() => {
+    const total = activeEvents
+      .filter((e) => e.status === 'confirmed')
+      .reduce((sum, e) => {
+        const num = parseFloat(String(e.fee).replace(/[₺\s]/g, '').replace(/\./g, '').replace(',', '.'));
+        return sum + (isNaN(num) ? 0 : num);
+      }, 0);
+    return total > 0 ? `₺${total.toLocaleString('tr-TR')}` : '₺0';
+  }, [activeEvents]);
+
+  const handleQuickAction = useCallback((action: string) => {
     if (action === '__calendar') { setCalendarVisible(true); return; }
     navigation.navigate(action);
-  };
+  }, [navigation]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setReloadKey((k) => k + 1);
+    setTimeout(() => setRefreshing(false), 1500);
+  }, []);
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.container}
+      showsVerticalScrollIndicator={false}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.venueColor} />}
+    >
 
       {/* ── HEADER ── */}
       <LinearGradient colors={['#1C1000', '#120C00', Colors.background]} style={styles.header}>
         <View style={styles.ambientGlow} />
         <View style={styles.headerTop}>
           <View>
-            <Text style={styles.greeting}>Hoş Geldiniz,</Text>
             <Text style={styles.venueName}>{displayName ?? 'Mekan'}</Text>
           </View>
           <PressableScale scaleTo={0.92} onPress={() => navigation.navigate('Notifications')} style={styles.notifBtn}>
@@ -82,18 +173,12 @@ export default function VenueHomeScreen({ navigation }: any) {
         <View style={styles.revenueBar}>
           <View style={styles.revenueLeft}>
             <Text style={styles.revenueLabel}>Bu Ay Gelir</Text>
-            <Text style={styles.revenueValue}>₺64.600</Text>
+            <Text style={styles.revenueValue}>{monthlyRevenue}</Text>
           </View>
           <View style={styles.revenueDivider} />
           <View style={styles.revenueRight}>
             <Text style={styles.revenueLabel}>Onaylı Etkinlik</Text>
-            <View style={styles.revenueValueRow}>
-              <Text style={styles.revenueValue}>6</Text>
-              <View style={styles.revenueTrendBadge}>
-                <Ionicons name="trending-up" size={10} color={Colors.success} />
-                <Text style={styles.revenueTrend}>+2</Text>
-              </View>
-            </View>
+            <Text style={styles.revenueValue}>{confirmedCount}</Text>
           </View>
         </View>
       </LinearGradient>
@@ -103,11 +188,11 @@ export default function VenueHomeScreen({ navigation }: any) {
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.analyticsRow}
-        style={{ marginBottom: Spacing.sm }}
+        style={styles.analyticsScroll}
       >
         {RECENT_ANALYTICS.map((item) => (
           <View key={item.label} style={[styles.analyticCard, Shadow.sm]}>
-            <View style={[styles.analyticIconWrap, { backgroundColor: (item.positive ? Colors.success : Colors.error) + '18' }]}>
+            <View style={[styles.analyticIconWrap, item.positive ? styles.analyticIconWrapPos : styles.analyticIconWrapNeg]}>
               <Ionicons name={item.icon} size={16} color={item.positive ? Colors.success : Colors.error} />
             </View>
             <Text style={styles.analyticValue}>{item.value}</Text>
@@ -118,7 +203,7 @@ export default function VenueHomeScreen({ navigation }: any) {
                 size={10}
                 color={item.positive ? Colors.success : Colors.error}
               />
-              <Text style={[styles.analyticTrend, { color: item.positive ? Colors.success : Colors.error }]}>
+              <Text style={[styles.analyticTrend, item.positive ? styles.analyticTrendPos : styles.analyticTrendNeg]}>
                 {item.trend}
               </Text>
             </View>
@@ -132,8 +217,8 @@ export default function VenueHomeScreen({ navigation }: any) {
           <PressableScale key={qa.label} style={styles.quickAction} onPress={() => handleQuickAction(qa.onPress)} scaleTo={0.93}>
             <LinearGradient colors={qa.colors} style={styles.quickActionGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
               <Ionicons name={qa.icon} size={22} color="#fff" />
+              <Text style={styles.quickLabel}>{qa.label}</Text>
             </LinearGradient>
-            <Text style={styles.quickLabel}>{qa.label}</Text>
           </PressableScale>
         ))}
       </View>
@@ -151,8 +236,8 @@ export default function VenueHomeScreen({ navigation }: any) {
           </PressableScale>
         </View>
 
-        {UPCOMING_EVENTS.map((event) => {
-          const gc = GENRE_COLORS[event.genre] ?? ['#475569', '#1E293B'];
+        {activeEvents.map((event) => {
+          const gc = [...(GENRE_COLORS[event.genre] ?? ['#475569', '#1E293B'])] as [string, string];
           const isConfirmed = event.status === 'confirmed';
           return (
             <PressableScale
@@ -161,7 +246,7 @@ export default function VenueHomeScreen({ navigation }: any) {
               scaleTo={0.98}
               onPress={() => Alert.alert(event.title, `Sanatçı: ${event.artist}\nTarih: ${event.date} — ${event.time}\nÜcret: ${event.fee}\nDurum: ${isConfirmed ? 'Onaylandı ✓' : 'Onay Bekliyor'}`)}
             >
-              <View style={[styles.eventStatusBar, { backgroundColor: isConfirmed ? Colors.success : Colors.accent }]} />
+              <View style={[styles.eventStatusBar, isConfirmed ? styles.eventStatusBarConfirmed : styles.eventStatusBarPending]} />
               <LinearGradient colors={gc} style={styles.eventGenreTag} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
                 <Text style={styles.eventGenreText}>{event.genre.substring(0, 2)}</Text>
               </LinearGradient>
@@ -178,11 +263,8 @@ export default function VenueHomeScreen({ navigation }: any) {
                   <Text style={styles.eventDate}>{event.date}</Text>
                 </View>
                 <Text style={styles.eventFee}>{event.fee}</Text>
-                <View style={[styles.statusBadge, {
-                  backgroundColor: isConfirmed ? Colors.success + '18' : Colors.accent + '18',
-                  borderColor: isConfirmed ? Colors.success + '44' : Colors.accent + '44',
-                }]}>
-                  <Text style={[styles.statusText, { color: isConfirmed ? Colors.success : Colors.accent }]}>
+                <View style={[styles.statusBadge, isConfirmed ? styles.statusBadgeConfirmed : styles.statusBadgePending]}>
+                  <Text style={[styles.statusText, isConfirmed ? styles.statusTextConfirmed : styles.statusTextPending]}>
                     {isConfirmed ? 'Onaylı' : 'Bekliyor'}
                   </Text>
                 </View>
@@ -205,8 +287,8 @@ export default function VenueHomeScreen({ navigation }: any) {
           </PressableScale>
         </View>
 
-        {ARTIST_SUGGESTIONS.map((artist) => {
-          const gc = GENRE_COLORS[artist.genre] ?? ['#4A4A6A', '#2A2A4A'];
+        {activeArtists.map((artist) => {
+          const gc = [...(GENRE_COLORS[artist.genre] ?? ['#4A4A6A', '#2A2A4A'])] as [string, string];
           return (
             <PressableScale
               key={artist.id}
@@ -248,7 +330,7 @@ export default function VenueHomeScreen({ navigation }: any) {
         })}
       </View>
 
-      <View style={{ height: 110 }} />
+      <View style={styles.bottomSpacer} />
 
       {/* ── TAKVİM MODAL ── */}
       <Modal visible={calendarVisible} transparent animationType="slide">
@@ -272,7 +354,7 @@ export default function VenueHomeScreen({ navigation }: any) {
                     ? <Text style={styles.calEmpty}>Etkinlik yok</Text>
                     : week.events.map((ev, i) => (
                       <View key={i} style={styles.calEventRow}>
-                        <View style={[styles.calDot, { backgroundColor: Colors.venueColor }]} />
+                        <View style={[styles.calDot, styles.calDotVenue]} />
                         <Text style={styles.calEventText}>{ev}</Text>
                       </View>
                     ))
@@ -344,6 +426,8 @@ const styles = StyleSheet.create({
 
   // Analytics
   analyticsRow: { gap: 10, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
+  analyticsScroll: { marginBottom: Spacing.sm },
+  bottomSpacer: { height: 110 },
   analyticCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
@@ -362,16 +446,16 @@ const styles = StyleSheet.create({
   analyticTrend: { fontSize: FontSize.xs, fontWeight: '700' },
 
   // Quick Actions
-  quickActions: { flexDirection: 'row', paddingHorizontal: Spacing.lg, gap: 10, marginBottom: Spacing.lg },
-  quickAction: { flex: 1, alignItems: 'center' },
+  quickActions: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginBottom: Spacing.lg },
+  quickAction: {},
   quickActionGrad: {
-    width: '100%', aspectRatio: 1,
+    width: 76, height: 76,
     borderRadius: BorderRadius.lg,
     alignItems: 'center', justifyContent: 'center',
-    marginBottom: 6,
+    gap: 6,
     ...Shadow.sm,
   },
-  quickLabel: { color: Colors.textSecondary, fontSize: 10, fontWeight: '600', textAlign: 'center' },
+  quickLabel: { color: '#fff', fontSize: 9, fontWeight: '700', textAlign: 'center' },
 
   // Sections
   section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.lg },
@@ -478,4 +562,15 @@ const styles = StyleSheet.create({
   addEventBtn: { borderRadius: BorderRadius.md, overflow: 'hidden', marginTop: Spacing.sm, marginBottom: Spacing.lg },
   addEventBtnGrad: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14 },
   addEventBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  analyticIconWrapPos: { backgroundColor: Colors.success + '18' },
+  analyticIconWrapNeg: { backgroundColor: Colors.error + '18' },
+  analyticTrendPos: { color: Colors.success },
+  analyticTrendNeg: { color: Colors.error },
+  eventStatusBarConfirmed: { backgroundColor: Colors.success },
+  eventStatusBarPending: { backgroundColor: Colors.accent },
+  statusBadgeConfirmed: { backgroundColor: Colors.success + '18', borderColor: Colors.success + '44' },
+  statusBadgePending: { backgroundColor: Colors.accent + '18', borderColor: Colors.accent + '44' },
+  statusTextConfirmed: { color: Colors.success },
+  statusTextPending: { color: Colors.accent },
+  calDotVenue: { backgroundColor: Colors.venueColor },
 });

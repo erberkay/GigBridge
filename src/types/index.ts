@@ -1,4 +1,24 @@
-export type UserType = 'customer' | 'artist' | 'venue';
+export type UserType = 'customer' | 'artist' | 'venue' | 'organizer';
+export type OrgRole = 'owner' | 'staff';
+
+export interface Organization {
+  id: string;
+  name: string;
+  description: string;
+  logo?: string;
+  ownerId: string;
+  memberCount: number;
+  createdAt: Date;
+}
+
+export interface OrgMember {
+  userId: string;
+  displayName: string;
+  email: string;
+  role: OrgRole;
+  status: 'active' | 'invited';
+  joinedAt: Date;
+}
 
 export interface User {
   id: string;

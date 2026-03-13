@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { doc, updateDoc, collection, query, where, getDocs, onSnapshot, Timestamp, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, collection, query, where, getDocs, getDoc, onSnapshot, Timestamp, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius, Shadow } from '../../theme';
@@ -26,28 +26,48 @@ const RECENT_REVIEWS = [
   { id: '2', author: 'Mehmet A.', rating: 4, comment: 'Çok başarılı bir gece. Teşekkürler!', venue: 'Nardis' },
 ];
 
+// ERR-AHOME-001 Teklif kabul/red Firestore hatası  ERR-AHOME-002 Aylık performans sayısı yüklenemedi
+const ERR = {
+  OFFER_ACTION_FAILED:    'ERR-AHOME-001',
+  MONTHLY_COUNT_FAILED:   'ERR-AHOME-002',
+} as const;
+
 export default function ArtistHomeScreen({ navigation }: any) {
-  const { displayName, userId } = useAuthStore();
-  const [offers, setOffers] = useState(INITIAL_OFFERS);
+  const displayName = useAuthStore((s) => s.displayName);
+  const userId      = useAuthStore((s) => s.userId);
   const [monthlyGigCount, setMonthlyGigCount] = useState(0);
   const [realtimeOffers, setRealtimeOffers] = useState<typeof INITIAL_OFFERS>([]);
   const [loadingOffers, setLoadingOffers] = useState(true);
+  const [upcomingGigs, setUpcomingGigs]     = useState<typeof UPCOMING_GIGS>([]);
+  const [recentReviews, setRecentReviews]   = useState<typeof RECENT_REVIEWS>([]);
+  const [avgRating, setAvgRating]           = useState('—');
+  const [totalEarnings, setTotalEarnings]   = useState('—');
+  const [followerCount, setFollowerCount]   = useState('—');
 
-  // Aylık onaylı performans sayısını Firestore'dan çek
+  // Aylık onaylı performans sayısını + takipçi sayısını Firestore'dan çek
   useEffect(() => {
     if (!userId) return;
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    getDocs(
-      query(
-        collection(db, 'invitations'),
-        where('artistId', '==', userId),
-        where('status', '==', 'accepted'),
-        where('updatedAt', '>=', Timestamp.fromDate(startOfMonth)),
+    Promise.all([
+      getDocs(
+        query(
+          collection(db, 'invitations'),
+          where('artistId', '==', userId),
+          where('status', '==', 'accepted'),
+          where('updatedAt', '>=', Timestamp.fromDate(startOfMonth)),
+        ),
       ),
-    ).then((snap) => setMonthlyGigCount(snap.size)).catch(() => {});
+      getDoc(doc(db, 'users', userId)),
+    ])
+      .then(([snap, userSnap]) => {
+        setMonthlyGigCount(snap.size);
+        const fc = userSnap.data()?.followerCount ?? 0;
+        setFollowerCount(fc >= 1000 ? `${(fc / 1000).toFixed(1)}K` : String(fc));
+      })
+      .catch(() => console.warn(`[${ERR.MONTHLY_COUNT_FAILED}] Aylık performans sayısı yüklenemedi.`));
   }, [userId]);
 
   // Gerçek zamanlı teklifleri Firestore'dan dinle
@@ -66,21 +86,85 @@ export default function ArtistHomeScreen({ navigation }: any) {
             venue: data.venueName ?? 'Mekan',
             date: data.eventDate ?? '—',
             time: data.eventTime ?? '—',
-            fee: `₺${(data.fee ?? 0).toLocaleString('tr-TR')}`,
+            fee: data.fee ? `₺${data.fee.toLocaleString('tr-TR')}` : 'Belirtilmemiş',
             genre: data.genre ?? '—',
             status: 'pending' as const,
           };
         });
-        setRealtimeOffers(liveOffers.length > 0 ? liveOffers : INITIAL_OFFERS);
+        setRealtimeOffers(liveOffers);
         setLoadingOffers(false);
       },
-      () => { setRealtimeOffers(INITIAL_OFFERS); setLoadingOffers(false); },
+      () => { setRealtimeOffers([]); setLoadingOffers(false); },
     );
     return unsub;
   }, [userId]);
 
-  const handleOffer = async (offerId: string, action: 'accept' | 'reject') => {
-    const offer = offers.find((o) => o.id === offerId);
+  // Kabul edilmiş davetlerden yaklaşan gig listesi + toplam kazanç
+  useEffect(() => {
+    if (!userId) return;
+    const q = query(
+      collection(db, 'invitations'),
+      where('artistId', '==', userId),
+      where('status', '==', 'accepted'),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const loaded = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id:     d.id,
+          venue:  data.venueName ?? '—',
+          date:   data.eventDate ?? data.date ?? '—',
+          time:   data.eventTime ?? data.time ?? '',
+          fee:    data.fee != null ? `₺${data.fee.toLocaleString('tr-TR')}` : 'Belirtilmemiş',
+          status: 'confirmed' as const,
+        };
+      });
+      setUpcomingGigs(loaded);
+
+      const total = snap.docs.reduce((sum, d) => {
+        const fee = d.data().fee ?? 0;
+        return sum + (typeof fee === 'number' ? fee : parseFloat(String(fee).replace(/[^0-9.]/g, '')) || 0);
+      }, 0);
+      const formatted = total >= 1000
+        ? `₺${(total / 1000).toFixed(1)}K`
+        : total > 0 ? `₺${total.toLocaleString('tr-TR')}` : '₺0';
+      setTotalEarnings(formatted);
+    }, (err) => console.warn('[ArtistHome] gigs onSnapshot:', err));
+    return () => unsub();
+  }, [userId]);
+
+  // Son yorumları Firestore'dan yükle + ortalama puan hesapla
+  useEffect(() => {
+    if (!userId) return;
+    const q = query(
+      collection(db, 'reviews'),
+      where('targetId', '==', userId),
+      where('targetType', '==', 'artist'),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const loaded = snap.docs.slice(0, 2).map((d) => {
+        const data = d.data();
+        return {
+          id:      d.id,
+          author:  data.authorName ?? 'Anonim',
+          rating:  data.rating ?? 0,
+          comment: data.comment ?? '',
+          venue:   data.venueName ?? '',
+        };
+      });
+      setRecentReviews(loaded);
+
+      if (snap.size > 0) {
+        const allRatings = snap.docs.map((d) => d.data().rating ?? 0);
+        const avg = (allRatings.reduce((s, r) => s + r, 0) / allRatings.length).toFixed(1);
+        setAvgRating(avg);
+      }
+    }, (err) => console.warn('[ArtistHome] reviews onSnapshot:', err));
+    return () => unsub();
+  }, [userId]);
+
+  const handleOffer = useCallback(async (offerId: string, action: 'accept' | 'reject') => {
+    const offer = realtimeOffers.find((o) => o.id === offerId);
     if (!offer) return;
     const label = action === 'accept' ? 'Kabul' : 'Reddet';
     Alert.alert(
@@ -98,28 +182,31 @@ export default function ArtistHomeScreen({ navigation }: any) {
                 updatedAt: serverTimestamp(),
               });
               if (action === 'accept' && userId) {
-                // Aylık sayacı artır — hedef tamamlandıysa bildir
                 const newCount = monthlyGigCount + 1;
                 setMonthlyGigCount(newCount);
                 if (newCount >= MONTHLY_GOAL) {
-                  await setDoc(doc(db, 'users', userId), { rewardEarned: true, rewardMonth: new Date().getMonth() + 1 }, { merge: true });
+                  await setDoc(
+                    doc(db, 'users', userId),
+                    { rewardEarned: true, rewardMonth: new Date().getMonth() + 1 },
+                    { merge: true },
+                  );
                 }
               }
+              setRealtimeOffers((prev) => prev.filter((o) => o.id !== offerId));
+              Alert.alert(
+                action === 'accept' ? 'Kabul Edildi!' : 'Reddedildi',
+                action === 'accept'
+                  ? `${offer.venue} teklifini kabul ettiniz. Performansınız takvime eklendi.`
+                  : `${offer.venue} teklifi reddedildi.`,
+              );
             } catch {
-              // Firestore'da kayıt yoksa sessizce geç
+              Alert.alert('Hata', `İşlem gerçekleştirilemedi. (${ERR.OFFER_ACTION_FAILED})`);
             }
-            setOffers((prev) => prev.filter((o) => o.id !== offerId));
-            Alert.alert(
-              action === 'accept' ? 'Kabul Edildi!' : 'Reddedildi',
-              action === 'accept'
-                ? `${offer.venue} teklifini kabul ettiniz. Performansınız takvime eklendi.`
-                : `${offer.venue} teklifi reddedildi.`,
-            );
           },
         },
       ],
     );
-  };
+  }, [realtimeOffers, monthlyGigCount, userId]);
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -128,10 +215,9 @@ export default function ArtistHomeScreen({ navigation }: any) {
         <View style={styles.ambientGlow} />
         <View style={styles.headerTop}>
           <View>
-            <Text style={styles.greeting}>Merhaba,</Text>
             <Text style={styles.artistName}>{displayName ?? 'Sanatçı'}</Text>
           </View>
-          <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+          <View style={styles.headerActions}>
             <PressableScale scaleTo={0.92} onPress={() => navigation.navigate('Notifications')} style={styles.notifBtn}>
               <LinearGradient colors={['#1E1530', '#140E22']} style={styles.notifGrad}>
                 <Ionicons name="notifications-outline" size={20} color={Colors.textSecondary} />
@@ -147,10 +233,10 @@ export default function ArtistHomeScreen({ navigation }: any) {
 
         {/* İstatistikler */}
         <View style={styles.statsRow}>
-          <StatBox label="Bu Ay" value={monthlyGigCount.toString() || '0'} sub="Performans" color={Colors.artistColor} />
-          <StatBox label="Ort. Puan" value="4.8" sub="★" color={Colors.accent} />
-          <StatBox label="Kazanç" value="₺14.5K" sub="Toplam" color={Colors.success} />
-          <StatBox label="Takipçi" value="1.2K" sub="Kişi" color={Colors.customerColor} />
+          <StatBox label="Bu Ay" value={monthlyGigCount.toString()} sub="Performans" color={Colors.artistColor} />
+          <StatBox label="Ort. Puan" value={avgRating}    sub="★"       color={Colors.accent} />
+          <StatBox label="Kazanç"    value={totalEarnings} sub="Toplam"  color={Colors.success} />
+          <StatBox label="Takipçi"   value={followerCount} sub="Kişi"    color={Colors.customerColor} />
         </View>
       </LinearGradient>
 
@@ -208,9 +294,14 @@ export default function ArtistHomeScreen({ navigation }: any) {
       {/* Yaklaşan performanslar */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Yaklaşan Performanslar</Text>
-        {UPCOMING_GIGS.map((gig) => (
+        {upcomingGigs.length === 0 ? (
+          <View style={styles.emptyOffers}>
+            <Ionicons name="calendar-outline" size={20} color={Colors.textMuted} />
+            <Text style={styles.emptyOffersText}>Onaylı performans yok</Text>
+          </View>
+        ) : upcomingGigs.map((gig) => (
           <View key={gig.id} style={[styles.gigCard, Shadow.sm]}>
-            <View style={[styles.gigStatusDot, { backgroundColor: Colors.success }]} />
+            <View style={[styles.gigStatusDot, styles.gigStatusDotConfirmed]} />
             <View style={styles.gigInfo}>
               <Text style={styles.gigVenue}>{gig.venue}</Text>
               <View style={styles.offerDateRow}>
@@ -226,11 +317,16 @@ export default function ArtistHomeScreen({ navigation }: any) {
       {/* Son yorumlar */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Son Yorumlar</Text>
-        {RECENT_REVIEWS.map((review) => (
+        {recentReviews.length === 0 ? (
+          <View style={styles.emptyOffers}>
+            <Ionicons name="star-outline" size={20} color={Colors.textMuted} />
+            <Text style={styles.emptyOffersText}>Henüz yorum yok</Text>
+          </View>
+        ) : recentReviews.map((review) => (
           <View key={review.id} style={[styles.reviewCard, Shadow.sm]}>
             <View style={styles.reviewHeader}>
               <Text style={styles.reviewAuthor}>{review.author}</Text>
-              <View style={{ flexDirection: 'row', gap: 2 }}>
+              <View style={styles.reviewStars}>
                 {Array.from({ length: review.rating }).map((_, i) => (
                   <Ionicons key={i} name="star" size={12} color={Colors.accent} />
                 ))}
@@ -252,7 +348,7 @@ export default function ArtistHomeScreen({ navigation }: any) {
         onPress={() => {
           const remaining = Math.max(0, MONTHLY_GOAL - monthlyGigCount);
           if (monthlyGigCount >= MONTHLY_GOAL) {
-            Alert.alert('🎉 Tebrikler!', `Bu ay ${MONTHLY_GOAL} performans hedefine ulaştınız! ₺${MONTHLY_REWARD} ödülünüz hesabınıza aktarılacak.`);
+            Alert.alert('Tebrikler!', `Bu ay ${MONTHLY_GOAL} performans hedefine ulaştınız! ₺${MONTHLY_REWARD} ödülünüz hesabınıza aktarılacak.`);
           } else {
             Alert.alert('Ödül Mekanizması', `Bu ay ${MONTHLY_GOAL} performans tamamla ve ₺${MONTHLY_REWARD} bonus kazan!\n\nŞu an ${monthlyGigCount}/${MONTHLY_GOAL} performans tamamlandı.\n${remaining} performans daha gerekiyor.`);
           }
@@ -268,7 +364,7 @@ export default function ArtistHomeScreen({ navigation }: any) {
             color="#fff"
             style={styles.rewardIcon}
           />
-          <View style={{ flex: 1 }}>
+          <View style={styles.rewardContent}>
             <Text style={styles.rewardTitle}>{monthlyGigCount >= MONTHLY_GOAL ? 'Hedef Tamamlandı!' : 'Ödül Mekanizması'}</Text>
             <Text style={styles.rewardDesc}>
               {monthlyGigCount >= MONTHLY_GOAL
@@ -281,7 +377,7 @@ export default function ArtistHomeScreen({ navigation }: any) {
         </LinearGradient>
       </PressableScale>
 
-      <View style={{ height: 100 }} />
+      <View style={styles.bottomSpacer} />
     </ScrollView>
   );
 }
@@ -403,9 +499,9 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   gigStatusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 12 },
+  gigStatusDotConfirmed: { backgroundColor: Colors.success },
   gigInfo: { flex: 1 },
   gigVenue: { color: Colors.text, fontSize: FontSize.md, fontWeight: '600', marginBottom: 2 },
-  gigDate: { color: Colors.textSecondary, fontSize: FontSize.sm },
   reviewVenue: { color: Colors.textMuted, fontSize: FontSize.xs },
   gigFee: { color: Colors.success, fontSize: FontSize.md, fontWeight: '700' },
   reviewCard: {
@@ -418,8 +514,6 @@ const styles = StyleSheet.create({
   },
   reviewHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   reviewAuthor: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '600' },
-  reviewRating: { fontSize: 12 },
-  reviewVenueLegacy: { color: Colors.textMuted, fontSize: FontSize.xs, marginBottom: 6 },
   reviewComment: { color: Colors.textSecondary, fontSize: FontSize.sm, lineHeight: 20 },
   rewardBanner: { marginHorizontal: Spacing.lg, borderRadius: BorderRadius.lg, overflow: 'hidden' },
   rewardGradient: { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, gap: 12 },
@@ -427,4 +521,8 @@ const styles = StyleSheet.create({
   rewardTitle: { color: '#fff', fontSize: FontSize.md, fontWeight: '700', marginBottom: 2 },
   rewardDesc: { color: 'rgba(255,255,255,0.8)', fontSize: FontSize.sm },
   rewardProgress: { marginLeft: 'auto', fontSize: FontSize.xl, fontWeight: '800', color: '#fff' },
+  headerActions: { flexDirection: 'row', gap: 10, alignItems: 'center' },
+  reviewStars: { flexDirection: 'row', gap: 2 },
+  rewardContent: { flex: 1 },
+  bottomSpacer: { height: 100 },
 });

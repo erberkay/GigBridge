@@ -31,13 +31,13 @@ export function SkeletonBox({ width = '100%', height = 16, borderRadius = Border
 export function SkeletonCard() {
   return (
     <View style={skeletonStyles.card}>
-      <SkeletonBox width={52} height={52} borderRadius={BorderRadius.md} style={{ marginRight: 12, flexShrink: 0 }} />
-      <View style={{ flex: 1, gap: 8 }}>
+      <SkeletonBox width={52} height={52} borderRadius={BorderRadius.md} style={skeletonStyles.cardAvatarBox} />
+      <View style={skeletonStyles.cardBody}>
         <SkeletonBox height={14} width="70%" />
         <SkeletonBox height={11} width="50%" />
         <SkeletonBox height={11} width="40%" />
       </View>
-      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+      <View style={skeletonStyles.cardRight}>
         <SkeletonBox width={48} height={14} />
         <SkeletonBox width={36} height={11} />
       </View>
@@ -48,9 +48,9 @@ export function SkeletonCard() {
 export function SkeletonConversation() {
   return (
     <View style={skeletonStyles.conversation}>
-      <SkeletonBox width={52} height={52} borderRadius={26} style={{ flexShrink: 0 }} />
-      <View style={{ flex: 1, gap: 8, marginLeft: 12 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+      <SkeletonBox width={52} height={52} borderRadius={26} style={skeletonStyles.convAvatar} />
+      <View style={skeletonStyles.convBody}>
+        <View style={skeletonStyles.convHeader}>
           <SkeletonBox height={14} width="45%" />
           <SkeletonBox width={40} height={11} />
         </View>
@@ -66,8 +66,14 @@ const skeletonStyles = StyleSheet.create({
     backgroundColor: Colors.surface, borderRadius: BorderRadius.lg,
     padding: 14, borderWidth: 1, borderColor: Colors.border, marginBottom: 10,
   },
+  cardAvatarBox: { marginRight: 12, flexShrink: 0 },
+  cardBody: { flex: 1, gap: 8 },
+  cardRight: { alignItems: 'flex-end', gap: 6 },
   conversation: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
+  convAvatar: { flexShrink: 0 },
+  convBody: { flex: 1, gap: 8, marginLeft: 12 },
+  convHeader: { flexDirection: 'row', justifyContent: 'space-between' },
 });

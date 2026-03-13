@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { UserType } from '../types';
+import { UserType, OrgRole } from '../types';
 
 interface AuthState {
   userId: string | null;
@@ -7,6 +7,9 @@ interface AuthState {
   displayName: string | null;
   photoURL: string | null;
   userType: UserType | null;
+  orgId: string | null;
+  orgRole: OrgRole | null;
+  orgName: string | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   setUser: (user: {
@@ -15,7 +18,11 @@ interface AuthState {
     displayName: string;
     photoURL?: string;
     userType: UserType;
+    orgId?: string | null;
+    orgRole?: OrgRole | null;
+    orgName?: string | null;
   }) => void;
+  setOrgInfo: (orgId: string, orgRole: OrgRole, orgName: string) => void;
   clearUser: () => void;
   setLoading: (loading: boolean) => void;
   updatePhotoURL: (url: string) => void;
@@ -27,6 +34,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   displayName: null,
   photoURL: null,
   userType: null,
+  orgId: null,
+  orgRole: null,
+  orgName: null,
   isLoading: true,
   isAuthenticated: false,
 
@@ -37,9 +47,14 @@ export const useAuthStore = create<AuthState>((set) => ({
       displayName: user.displayName,
       photoURL: user.photoURL ?? null,
       userType: user.userType,
+      orgId: user.orgId ?? null,
+      orgRole: user.orgRole ?? null,
+      orgName: user.orgName ?? null,
       isAuthenticated: true,
       isLoading: false,
     }),
+
+  setOrgInfo: (orgId, orgRole, orgName) => set({ orgId, orgRole, orgName }),
 
   clearUser: () =>
     set({
@@ -48,6 +63,9 @@ export const useAuthStore = create<AuthState>((set) => ({
       displayName: null,
       photoURL: null,
       userType: null,
+      orgId: null,
+      orgRole: null,
+      orgName: null,
       isAuthenticated: false,
       isLoading: false,
     }),

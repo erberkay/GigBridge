@@ -16,10 +16,14 @@ export async function pickAndUploadImage(path: string): Promise<string | null> {
   if (result.canceled || !result.assets[0]) return null;
 
   const uri = result.assets[0].uri;
-  const response = await fetch(uri);
-  const blob = await response.blob();
-
-  const storageRef = ref(storage, path);
-  await uploadBytes(storageRef, blob);
-  return getDownloadURL(storageRef);
+  try {
+    const response = await fetch(uri);
+    const blob = await response.blob();
+    const storageRef = ref(storage, path);
+    await uploadBytes(storageRef, blob);
+    return getDownloadURL(storageRef);
+  } catch (err) {
+    console.warn('[uploadImage] upload failed:', err);
+    return null;
+  }
 }

@@ -1,27 +1,70 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { signOut } from 'firebase/auth';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, getDoc, getDocs, collection, query, where } from 'firebase/firestore';
 import { auth, db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
+
+// ERR-VPROFILE-001 Firestore güncelleme hatası   ERR-VPROFILE-002 Çıkış yapılamadı
+// ERR-VPROFILE-003 Profil yüklenemedi
+const ERR = {
+  FIRESTORE_UPDATE:'ERR-VPROFILE-001',
+  SIGN_OUT_FAILED: 'ERR-VPROFILE-002',
+  LOAD_FAILED:     'ERR-VPROFILE-003',
+} as const;
 
 const AMENITIES = ['Profesyonel Ses Sistemi', 'Işık Sistemi', 'DJ Booth', 'Soyunma Odası', 'Parking', 'VIP Alan'];
 
 type InfoIconName = 'location-outline' | 'people-outline' | 'call-outline' | 'globe-outline';
 
 export default function VenueProfileScreen({ navigation }: any) {
-  const { displayName, email, userId, clearUser } = useAuthStore();
+  const displayName = useAuthStore((s) => s.displayName);
+  const email       = useAuthStore((s) => s.email);
+  const userId      = useAuthStore((s) => s.userId);
+  const clearUser   = useAuthStore((s) => s.clearUser);
   const [isEditing, setIsEditing] = useState(false);
   const [address, setAddress] = useState('Şişli, İstanbul');
   const [capacity, setCapacity] = useState('500');
   const [phone, setPhone] = useState('+90 212 XXX XX XX');
   const [website, setWebsite] = useState('www.mekan.com');
   const [saving, setSaving] = useState(false);
+  const [profileStats, setProfileStats] = useState({ events: '—', rating: '—', attendance: '—', artists: '—' });
 
-  const handleSave = async () => {
+  useEffect(() => {
+    if (!userId) return;
+    Promise.all([
+      getDoc(doc(db, 'users', userId)),
+      getDocs(query(collection(db, 'events'), where('venueId', '==', userId))),
+      getDocs(query(collection(db, 'venueReviews'), where('venueId', '==', userId))),
+      getDocs(query(collection(db, 'invitations'), where('venueId', '==', userId), where('status', '==', 'accepted'))),
+    ]).then(([userSnap, eventsSnap, reviewsSnap, invSnap]) => {
+      if (userSnap.exists()) {
+        const d = userSnap.data();
+        if (d.address) setAddress(d.address);
+        if (d.capacity != null) setCapacity(String(d.capacity));
+        if (d.phone) setPhone(d.phone);
+        if (d.website) setWebsite(d.website);
+      }
+      const evCount   = eventsSnap.size;
+      const totalAtt  = eventsSnap.docs.reduce((s, d) => s + (d.data().attendeeCount ?? 0), 0);
+      const revCount  = reviewsSnap.size;
+      const avgRating = revCount > 0
+        ? (reviewsSnap.docs.reduce((s, d) => s + (d.data().overallRating ?? 0), 0) / revCount).toFixed(1)
+        : '—';
+      const artistIds = new Set(invSnap.docs.map((d) => d.data().artistId).filter(Boolean));
+      setProfileStats({
+        events:     String(evCount),
+        rating:     avgRating,
+        attendance: totalAtt >= 1000 ? `${(totalAtt / 1000).toFixed(1)}K` : String(totalAtt),
+        artists:    String(artistIds.size),
+      });
+    }).catch((err) => { console.warn(ERR.LOAD_FAILED, err); });
+  }, [userId]);
+
+  const handleSave = useCallback(async () => {
     if (!userId) return;
     setSaving(true);
     try {
@@ -29,21 +72,29 @@ export default function VenueProfileScreen({ navigation }: any) {
       setIsEditing(false);
       Alert.alert('Kaydedildi', 'Profiliniz güncellendi.');
     } catch {
-      Alert.alert('Hata', 'Profil güncellenemedi.');
+      Alert.alert('Hata', `Profil güncellenemedi. (${ERR.FIRESTORE_UPDATE})`);
     } finally {
       setSaving(false);
     }
-  };
+  }, [userId, address, capacity, phone, website]);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     Alert.alert('Çıkış', 'Hesabınızdan çıkmak istiyor musunuz?', [
       { text: 'İptal', style: 'cancel' },
       {
         text: 'Çıkış Yap', style: 'destructive',
-        onPress: async () => { await signOut(auth); clearUser(); },
+        onPress: async () => {
+          try {
+            await signOut(auth);
+          } catch {
+            console.warn(`[${ERR.SIGN_OUT_FAILED}] Firebase sign-out başarısız.`);
+          } finally {
+            clearUser();
+          }
+        },
       },
     ]);
-  };
+  }, [clearUser]);
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -58,15 +109,15 @@ export default function VenueProfileScreen({ navigation }: any) {
           </View>
         </View>
         <Text style={styles.name}>{displayName ?? 'Mekan'}</Text>
-        <Text style={styles.email}>{email}</Text>
+        <Text style={styles.email}>{email ?? ''}</Text>
         <View style={styles.typeBadge}>
           <Ionicons name="business-outline" size={13} color={Colors.venueColor} />
           <Text style={styles.typeText}>Mekan</Text>
         </View>
         {isEditing ? (
           <View style={styles.editBtnRow}>
-            <TouchableOpacity style={[styles.editBtn, { borderColor: Colors.textMuted }]} onPress={() => setIsEditing(false)}>
-              <Text style={[styles.editBtnText, { color: Colors.textMuted }]}>İptal</Text>
+            <TouchableOpacity style={[styles.editBtn, styles.editBtnCancel]} onPress={() => setIsEditing(false)}>
+              <Text style={[styles.editBtnText, styles.editBtnCancelText]}>İptal</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.editBtn} onPress={handleSave} disabled={saving}>
               <Text style={styles.editBtnText}>{saving ? 'Kaydediliyor...' : 'Kaydet'}</Text>
@@ -81,10 +132,10 @@ export default function VenueProfileScreen({ navigation }: any) {
 
       {/* İstatistikler */}
       <View style={styles.statsRow}>
-        <StatCard label="Etkinlik" value="48" />
-        <StatCard label="Ort. Puan" value="4.6" color={Colors.accent} />
-        <StatCard label="Toplam Katılım" value="12.4K" color={Colors.venueColor} />
-        <StatCard label="Sanatçı" value="32" />
+        <StatCard label="Etkinlik"       value={profileStats.events} />
+        <StatCard label="Ort. Puan"      value={profileStats.rating}     color={Colors.accent} />
+        <StatCard label="Toplam Katılım" value={profileStats.attendance} color={Colors.venueColor} />
+        <StatCard label="Sanatçı"        value={profileStats.artists} />
       </View>
 
       {/* Mekan bilgileri */}
@@ -134,7 +185,7 @@ export default function VenueProfileScreen({ navigation }: any) {
       </View>
 
       <View style={styles.settingsMenu}>
-        <TouchableOpacity style={[styles.settingsMenuItem, { borderBottomWidth: 1, borderBottomColor: Colors.border }]} onPress={() => navigation.navigate('Notifications')}>
+        <TouchableOpacity style={[styles.settingsMenuItem, styles.settingsMenuItemBordered]} onPress={() => navigation.navigate('Notifications')}>
           <Ionicons name="notifications-outline" size={20} color={Colors.textSecondary} style={styles.settingsMenuIcon} />
           <Text style={styles.settingsMenuLabel}>Bildirim Ayarları</Text>
           <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
@@ -148,7 +199,7 @@ export default function VenueProfileScreen({ navigation }: any) {
 
       <TouchableOpacity style={styles.proBtn} onPress={() => navigation.navigate('ProAccount')} activeOpacity={0.85}>
         <LinearGradient colors={[Colors.venueColor, '#D97706']} style={styles.proBtnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <View style={styles.proBtnInner}>
             <Ionicons name="diamond-outline" size={18} color="#fff" />
             <Text style={styles.proBtnText}>Pro Hesaba Geç</Text>
           </View>
@@ -159,7 +210,7 @@ export default function VenueProfileScreen({ navigation }: any) {
         <Text style={styles.logoutText}>Çıkış Yap</Text>
       </TouchableOpacity>
 
-      <View style={{ height: 100 }} />
+      <View style={styles.bottomSpacer} />
     </ScrollView>
   );
 }
@@ -185,7 +236,6 @@ function EditRow({ icon, label, value, onChange, keyboardType }: { icon: InfoIco
         onChangeText={onChange}
         placeholderTextColor={Colors.textMuted}
         keyboardType={keyboardType}
-        color={Colors.text}
       />
     </View>
   );
@@ -194,7 +244,7 @@ function EditRow({ icon, label, value, onChange, keyboardType }: { icon: InfoIco
 function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <View style={styles.statCard}>
-      <Text style={[styles.statValue, color ? { color } : {}]}>{value}</Text>
+      <Text style={[styles.statValue, color ? { color } : null]}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
@@ -229,9 +279,9 @@ const styles = StyleSheet.create({
   typeText: { color: Colors.venueColor, fontSize: FontSize.sm, fontWeight: '600' },
   editBtnRow: { flexDirection: 'row', gap: 10 },
   editBtn: {
-    paddingHorizontal: 24, paddingVertical: 10,
+    paddingHorizontal: 20, paddingVertical: 8,
     borderRadius: BorderRadius.full,
-    borderWidth: 1.5, borderColor: Colors.venueColor,
+    borderWidth: 1, borderColor: Colors.venueColor,
   },
   editBtnText: { color: Colors.venueColor, fontSize: FontSize.sm, fontWeight: '700' },
   statsRow: {
@@ -309,8 +359,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 12,
   },
-  proBtnGrad: { paddingVertical: 16, alignItems: 'center' },
-  proBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  proBtnGrad: { paddingVertical: 18, paddingHorizontal: Spacing.lg, alignItems: 'center' },
+  proBtnText: { color: '#fff', fontSize: FontSize.lg, fontWeight: '700' },
   logoutBtn: {
     marginHorizontal: Spacing.lg,
     paddingVertical: 16,
@@ -320,4 +370,9 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.error + '11',
   },
   logoutText: { color: Colors.error, fontSize: FontSize.md, fontWeight: '600' },
+  editBtnCancel: { borderColor: Colors.textMuted },
+  editBtnCancelText: { color: Colors.textMuted },
+  settingsMenuItemBordered: { borderBottomWidth: 1, borderBottomColor: Colors.border },
+  proBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  bottomSpacer: { height: 100 },
 });

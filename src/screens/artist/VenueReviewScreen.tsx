@@ -1,11 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, Alert, FlatList,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+// ERR-VREVIEW-001 Gönderim hatası  ERR-VREVIEW-002 Auth eksik
+// ERR-VREVIEW-003 Mekan seçilmedi  ERR-VREVIEW-004 Tüm kriterler puanlanmadı
+const ERR = {
+  SUBMIT_FAILED:      'ERR-VREVIEW-001',
+  NOT_AUTHENTICATED:  'ERR-VREVIEW-002',
+  NO_VENUE:           'ERR-VREVIEW-003',
+  INCOMPLETE_RATINGS: 'ERR-VREVIEW-004',
+} as const;
+
+import { collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
@@ -13,10 +22,10 @@ import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 const WORKED_VENUES = [
-  { id: '1', name: 'Babylon Club', city: 'İstanbul', emoji: '🏢', lastPerformance: '10 Mart 2025', myReview: null },
-  { id: '2', name: 'Nardis Jazz', city: 'İstanbul', emoji: '🎷', lastPerformance: '5 Mart 2025', myReview: 4 },
-  { id: '3', name: 'IF Performance', city: 'İstanbul', emoji: '🎸', lastPerformance: '28 Şubat 2025', myReview: null },
-  { id: '4', name: 'Zorlu PSM', city: 'İstanbul', emoji: '🏛️', lastPerformance: '20 Şubat 2025', myReview: 5 },
+  { id: '1', name: 'Babylon Club',    city: 'İstanbul', lastPerformance: '10 Mart 2025',  myReview: null },
+  { id: '2', name: 'Nardis Jazz',     city: 'İstanbul', lastPerformance: '5 Mart 2025',   myReview: 4    },
+  { id: '3', name: 'IF Performance',  city: 'İstanbul', lastPerformance: '28 Şubat 2025', myReview: null },
+  { id: '4', name: 'Zorlu PSM',       city: 'İstanbul', lastPerformance: '20 Şubat 2025', myReview: 5    },
 ];
 
 const REVIEW_CRITERIA: { key: string; iconName: IoniconName; label: string; description: string }[] = [
@@ -26,50 +35,100 @@ const REVIEW_CRITERIA: { key: string; iconName: IoniconName; label: string; desc
   { key: 'communication', iconName: 'chatbubble-outline', label: 'İletişim', description: 'Organizasyon süreci iletişimi nasıldı?' },
 ];
 
+type WorkedVenue = typeof WORKED_VENUES[0];
+
 export default function VenueReviewScreen({ navigation }: any) {
-  const { userId, displayName } = useAuthStore();
-  const [selectedVenue, setSelectedVenue] = useState<typeof WORKED_VENUES[0] | null>(null);
-  const [ratings, setRatings] = useState<Record<string, number>>({});
-  const [comment, setComment] = useState('');
-  const [isAnonymous, setIsAnonymous] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const userId      = useAuthStore((s) => s.userId);
+  const displayName = useAuthStore((s) => s.displayName);
 
-  const overallRating = Object.values(ratings).length > 0
-    ? (Object.values(ratings).reduce((a, b) => a + b, 0) / Object.values(ratings).length).toFixed(1)
-    : null;
+  const [venues, setVenues] = useState<WorkedVenue[]>(userId?.startsWith('demo_') ? WORKED_VENUES : []);
 
-  const handleSubmit = async () => {
+  // Kabul edilmiş davetlerden mekan listesini yükle
+  useEffect(() => {
+    if (!userId || userId.startsWith('demo_')) return;
+    (async () => {
+      try {
+        const q = query(
+          collection(db, 'invitations'),
+          where('artistId', '==', userId),
+          where('status', '==', 'accepted'),
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) { setVenues([]); return; }
+        // Aynı mekandan birden fazla davet varsa tekil tut
+        const seen = new Set<string>();
+        const loaded: WorkedVenue[] = [];
+        snap.docs.forEach((d) => {
+          const data = d.data();
+          const venueKey = data.venueId ?? data.venueName ?? d.id;
+          if (seen.has(venueKey)) return;
+          seen.add(venueKey);
+          loaded.push({
+            id:              venueKey,
+            name:            data.venueName  ?? 'Mekan',
+            city:            data.venueCity  ?? 'İstanbul',
+            lastPerformance: data.date       ?? data.updatedAt?.toDate?.()?.toLocaleDateString('tr-TR') ?? '—',
+            myReview:        null,
+          });
+        });
+        if (loaded.length > 0) setVenues(loaded);
+      } catch { /* demo verileri göster */ }
+    })();
+  }, [userId]);
+
+  const [selectedVenue, setSelectedVenue] = useState<WorkedVenue | null>(null);
+  const [ratings, setRatings]             = useState<Record<string, number>>({});
+  const [comment, setComment]             = useState('');
+  const [isAnonymous, setIsAnonymous]     = useState(false);
+  const [submitting, setSubmitting]       = useState(false);
+
+  const overallRating = useMemo(() => {
+    const vals = Object.values(ratings);
+    if (vals.length === 0) return null;
+    return (vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1);
+  }, [ratings]);
+
+  const handleSubmit = useCallback(async () => {
+    if (!userId) {
+      Alert.alert('Giriş Gerekli', `Değerlendirme yapabilmek için giriş yapmalısınız. (${ERR.NOT_AUTHENTICATED})`);
+      return;
+    }
     if (!selectedVenue) {
-      Alert.alert('Hata', 'Lütfen mekan seçin.');
+      Alert.alert('Mekan Seçin', `Lütfen değerlendirmek istediğiniz mekanı seçin. (${ERR.NO_VENUE})`);
       return;
     }
     if (Object.keys(ratings).length < REVIEW_CRITERIA.length) {
-      Alert.alert('Hata', 'Lütfen tüm kriterleri puanlayın.');
+      Alert.alert('Eksik Puanlar', `Lütfen tüm kriterleri puanlayın. (${ERR.INCOMPLETE_RATINGS})`);
       return;
     }
     setSubmitting(true);
     try {
       await addDoc(collection(db, 'venueReviews'), {
-        artistId: userId,
-        artistName: isAnonymous ? 'Anonim Sanatçı' : displayName,
+        artistId:      userId,
+        artistName:    isAnonymous ? 'Anonim Sanatçı' : displayName,
         isAnonymous,
-        venueId: selectedVenue.id,
-        venueName: selectedVenue.name,
+        venueId:       selectedVenue.id,
+        venueName:     selectedVenue.name,
         ratings,
-        overallRating: parseFloat(overallRating!),
-        comment: comment.trim(),
-        createdAt: serverTimestamp(),
+        overallRating: parseFloat(overallRating ?? '0'),
+        comment:       comment.trim(),
+        createdAt:     serverTimestamp(),
       });
       Alert.alert('Teşekkürler!', 'Mekan değerlendirmeniz gönderildi. Topluluk için değerli bir katkı!');
+      const submittedId = selectedVenue.id;
+      const submittedRating = parseFloat(overallRating ?? '0');
+      setVenues((prev) => prev.map((v) =>
+        v.id === submittedId ? { ...v, myReview: submittedRating } : v,
+      ));
       setSelectedVenue(null);
       setRatings({});
       setComment('');
     } catch {
-      Alert.alert('Hata', 'Değerlendirme gönderilemedi.');
+      Alert.alert('Hata', `Değerlendirme gönderilemedi. (${ERR.SUBMIT_FAILED})`);
     } finally {
       setSubmitting(false);
     }
-  };
+  }, [userId, displayName, selectedVenue, ratings, overallRating, comment, isAnonymous, setVenues]);
 
   if (selectedVenue) {
     return (
@@ -81,7 +140,7 @@ export default function VenueReviewScreen({ navigation }: any) {
             </TouchableOpacity>
             <Text style={styles.title}>Mekan Değerlendir</Text>
             <View style={styles.venueHeader}>
-              <LinearGradient colors={[Colors.venueColor, '#D97706']} style={styles.venueAvatarSmall}>
+              <LinearGradient colors={['#7C3AED', '#4C1D95']} style={styles.venueAvatarSmall}>
                 <Text style={styles.venueAvatarSmallText}>{selectedVenue.name.charAt(0).toUpperCase()}</Text>
               </LinearGradient>
               <View>
@@ -94,7 +153,7 @@ export default function VenueReviewScreen({ navigation }: any) {
           {overallRating && (
             <View style={styles.overallBox}>
               <Text style={styles.overallLabel}>Genel Puan</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={styles.overallRatingRow}>
                 <Ionicons name="star" size={18} color={Colors.artistColor} />
                 <Text style={styles.overallValue}>{overallRating}</Text>
               </View>
@@ -104,7 +163,7 @@ export default function VenueReviewScreen({ navigation }: any) {
           {/* Kriterler */}
           {REVIEW_CRITERIA.map((criterion) => (
             <View key={criterion.key} style={styles.criterionCard}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <View style={styles.criterionHeader}>
                 <Ionicons name={criterion.iconName} size={16} color={Colors.artistColor} />
                 <Text style={styles.criterionLabel}>{criterion.label}</Text>
               </View>
@@ -114,7 +173,7 @@ export default function VenueReviewScreen({ navigation }: any) {
                   <TouchableOpacity
                     key={star}
                     onPress={() => setRatings((prev) => ({ ...prev, [criterion.key]: star }))}
-                    style={{ padding: 2 }}
+                    style={styles.starBtn}
                   >
                     <Ionicons
                       name={star <= (ratings[criterion.key] ?? 0) ? 'star' : 'star-outline'}
@@ -160,14 +219,14 @@ export default function VenueReviewScreen({ navigation }: any) {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+            style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
             onPress={handleSubmit}
             disabled={submitting}
           >
             <Text style={styles.submitBtnText}>{submitting ? 'Gönderiliyor...' : 'Değerlendirmeyi Gönder'}</Text>
           </TouchableOpacity>
 
-          <View style={{ height: 80 }} />
+          <View style={styles.bottomSpacer} />
         </ScrollView>
       </View>
     );
@@ -184,9 +243,15 @@ export default function VenueReviewScreen({ navigation }: any) {
       </View>
 
       <FlatList
-        data={WORKED_VENUES}
+        data={venues}
         keyExtractor={(v) => v.id}
         contentContainerStyle={styles.list}
+        ListEmptyComponent={
+          <View style={styles.emptyBox}>
+            <Ionicons name="business-outline" size={44} color={Colors.textMuted} />
+            <Text style={styles.emptyText}>Henüz onaylanmış performansınız yok.</Text>
+          </View>
+        }
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.venueCard}
@@ -194,7 +259,7 @@ export default function VenueReviewScreen({ navigation }: any) {
             activeOpacity={item.myReview ? 1 : 0.85}
           >
             <View style={styles.venueLeft}>
-              <LinearGradient colors={[Colors.venueColor, '#D97706']} style={styles.venueAvatarBox}>
+              <LinearGradient colors={['#7C3AED', '#4C1D95']} style={styles.venueAvatarBox}>
                 <Text style={styles.venueAvatarBoxText}>{item.name.charAt(0).toUpperCase()}</Text>
               </LinearGradient>
               <View>
@@ -249,7 +314,6 @@ const styles = StyleSheet.create({
   criterionLabel: { color: Colors.text, fontSize: FontSize.md, fontWeight: '700', marginBottom: 4 },
   criterionDesc: { color: Colors.textMuted, fontSize: FontSize.xs, marginBottom: Spacing.md },
   starRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  star: {},
   ratingLabel: { color: Colors.accent, fontSize: FontSize.sm, fontWeight: '700', marginLeft: 4 },
   section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.md },
   sectionTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: '700', marginBottom: 8 },
@@ -271,7 +335,6 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   checkboxActive: { backgroundColor: Colors.artistColor, borderColor: Colors.artistColor },
-  checkmark: {},
   anonymousLabel: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '600' },
   anonymousDesc: { color: Colors.textMuted, fontSize: FontSize.xs },
   submitBtn: {
@@ -280,7 +343,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   submitBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
-  list: { paddingHorizontal: Spacing.lg, paddingBottom: 80, gap: 12 },
+  submitBtnDisabled: { opacity: 0.6 },
+  list: { paddingHorizontal: Spacing.lg, paddingBottom: 80, gap: 12, flexGrow: 1 },
+  emptyBox: { alignItems: 'center', paddingTop: 80, gap: 12 },
+  emptyText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center' },
   venueCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
@@ -310,4 +376,8 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.sm,
   },
   reviewNowText: { color: '#fff', fontSize: FontSize.xs, fontWeight: '700' },
+  overallRatingRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  criterionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  starBtn: { padding: 2 },
+  bottomSpacer: { height: 80 },
 });

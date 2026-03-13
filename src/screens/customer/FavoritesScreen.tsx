@@ -1,7 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { collection, onSnapshot, doc, deleteDoc } from 'firebase/firestore';
+import { db } from '../../services/firebase';
+import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
 import { PressableScale } from '../../components/common/PressableScale';
 
@@ -37,35 +40,93 @@ const FAVE_EVENTS = [
   { id: '3', title: 'DJ Berkay Live Set', venue: "Berkay Er'in Sahnesi", artist: 'DJ Berkay', date: 'Her C.tesi • 23:00', genre: 'Electronic', price: '₺200' },
 ];
 
-function getGrad(genre: string): readonly [string, string] {
+function getGrad(genre?: string): readonly [string, string] {
+  if (!genre) return DEFAULT_GRAD;
   const key = Object.keys(GENRE_GRADIENTS).find((k) => genre.includes(k));
   return key ? GENRE_GRADIENTS[key] : DEFAULT_GRAD;
 }
 
 export default function FavoritesScreen({ navigation }: any) {
+  const userId = useAuthStore((s) => s.userId);
   const [activeTab, setActiveTab] = useState(0);
-  const [artists, setArtists] = useState(FAVE_ARTISTS);
-  const [venues, setVenues] = useState(FAVE_VENUES);
-  const [events, setEvents] = useState(FAVE_EVENTS);
+  const [artists, setArtists] = useState<typeof FAVE_ARTISTS>([]);
+  const [venues, setVenues] = useState<typeof FAVE_VENUES>([]);
+  const [events, setEvents] = useState<typeof FAVE_EVENTS>([]);
 
-  const removeArtist = (id: string) => {
-    Alert.alert('Favorilerden Kaldır', 'Bu sanatçıyı favorilerden kaldırmak istiyor musunuz?', [
+  // Load followed artists from Firestore (following subcollection doubles as favorites for artists)
+  useEffect(() => {
+    if (!userId) return;
+    const unsub = onSnapshot(collection(db, 'users', userId, 'following'), (snap) => {
+      if (snap.empty) { setArtists([]); return; }
+      setArtists(snap.docs.map((d) => {
+        const data = d.data();
+        return { id: d.id, name: data.artistName ?? d.id, genre: data.genre ?? 'Müzisyen', rating: data.rating ?? 0, followers: data.followers ?? '—' };
+      }));
+    }, (err) => console.warn('[Favorites] following onSnapshot hatası:', err));
+    return () => unsub();
+  }, [userId]);
+
+  // Load favorite events from Firestore
+  useEffect(() => {
+    if (!userId) return;
+    const unsub = onSnapshot(collection(db, 'users', userId, 'favoriteEvents'), (snap) => {
+      if (snap.empty) return;
+      setEvents(snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id:     d.id,
+          title:  data.title   ?? '—',
+          venue:  data.venue   ?? '—',
+          artist: data.artist  ?? '—',
+          date:   data.date    ?? '—',
+          genre:  data.genre   ?? '',
+          price:  data.price   ?? '—',
+        };
+      }));
+    }, (err) => console.warn('[Favorites] events onSnapshot hatası:', err));
+    return () => unsub();
+  }, [userId]);
+
+  // Load favorite venues from Firestore
+  useEffect(() => {
+    if (!userId) return;
+    const unsub = onSnapshot(collection(db, 'users', userId, 'favorites'), (snap) => {
+      if (snap.empty) { setVenues([]); return; }
+      setVenues(snap.docs.map((d) => {
+        const data = d.data();
+        return { id: d.id, name: data.venueName ?? d.id, city: data.city ?? 'İstanbul', rating: data.rating ?? 0, capacity: data.capacity ?? 0, genre: data.genre ?? '' };
+      }));
+    }, (err) => console.warn('[Favorites] venues onSnapshot hatası:', err));
+    return () => unsub();
+  }, [userId]);
+
+  const removeArtist = useCallback((id: string) => {
+    Alert.alert('Takibi Bırak', 'Bu sanatçıyı takip etmeyi bırakmak istiyor musunuz?', [
       { text: 'İptal', style: 'cancel' },
-      { text: 'Kaldır', style: 'destructive', onPress: () => setArtists((p) => p.filter((a) => a.id !== id)) },
+      { text: 'Bırak', style: 'destructive', onPress: async () => {
+        if (userId) { try { await deleteDoc(doc(db, 'users', userId, 'following', id)); } catch { /* local fallback */ }  }
+        setArtists((p) => p.filter((a) => a.id !== id));
+      }},
     ]);
-  };
-  const removeVenue = (id: string) => {
+  }, [userId]);
+  const removeVenue = useCallback((id: string) => {
     Alert.alert('Favorilerden Kaldır', 'Bu mekanı favorilerden kaldırmak istiyor musunuz?', [
       { text: 'İptal', style: 'cancel' },
-      { text: 'Kaldır', style: 'destructive', onPress: () => setVenues((p) => p.filter((v) => v.id !== id)) },
+      { text: 'Kaldır', style: 'destructive', onPress: async () => {
+        if (userId) { try { await deleteDoc(doc(db, 'users', userId, 'favorites', id)); } catch { /* local fallback */ } }
+        setVenues((p) => p.filter((v) => v.id !== id));
+      }},
     ]);
-  };
-  const removeEvent = (id: string) => {
+  }, [userId]);
+  const removeEvent = useCallback((id: string) => {
     Alert.alert('Favorilerden Kaldır', 'Bu etkinliği favorilerden kaldırmak istiyor musunuz?', [
       { text: 'İptal', style: 'cancel' },
-      { text: 'Kaldır', style: 'destructive', onPress: () => setEvents((p) => p.filter((e) => e.id !== id)) },
+      { text: 'Kaldır', style: 'destructive', onPress: async () => {
+        setEvents((p) => p.filter((e) => e.id !== id));
+        if (userId) { try { await deleteDoc(doc(db, 'users', userId, 'favoriteEvents', id)); } catch { /* local state already updated */ } }
+      }},
     ]);
-  };
+  }, [userId]);
 
   return (
     <View style={styles.container}>
@@ -94,7 +155,7 @@ export default function FavoritesScreen({ navigation }: any) {
           >
             <Text style={[styles.tabText, activeTab === i && styles.tabTextActive]}>{tab}</Text>
             <View style={[styles.tabCountBadge, activeTab === i && styles.tabCountBadgeActive]}>
-              <Text style={[styles.tabCount, activeTab === i && { color: Colors.primary }]}>
+              <Text style={[styles.tabCount, activeTab === i && styles.tabCountActive]}>
                 {i === 0 ? artists.length : i === 1 ? venues.length : events.length}
               </Text>
             </View>
@@ -118,7 +179,7 @@ export default function FavoritesScreen({ navigation }: any) {
                 onPress={() => navigation.navigate('ArtistDetail', { artist: item })}
                 scaleTo={0.97}
               >
-                <LinearGradient colors={gc as any} style={styles.avatar}>
+                <LinearGradient colors={[...gc] as [string, string]} style={styles.avatar}>
                   <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
                 </LinearGradient>
                 <View style={styles.info}>
@@ -160,12 +221,12 @@ export default function FavoritesScreen({ navigation }: any) {
                 onPress={() => navigation.navigate('VenueDetail', { venue: item })}
                 scaleTo={0.97}
               >
-                <LinearGradient colors={gc as any} style={[styles.avatar, { borderRadius: 14 }]}>
+                <LinearGradient colors={[...gc] as [string, string]} style={styles.avatarSquare}>
                   <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
                 </LinearGradient>
                 <View style={styles.info}>
                   <Text style={styles.name}>{item.name}</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+                  <View style={styles.metaRow}>
                     <Ionicons name="location-outline" size={11} color={Colors.textMuted} />
                     <Text style={styles.sub}>{item.city}</Text>
                   </View>
@@ -205,28 +266,31 @@ export default function FavoritesScreen({ navigation }: any) {
                 onPress={() => navigation.navigate('EventDetail', { event: item })}
                 scaleTo={0.97}
               >
-                <LinearGradient colors={gc as any} style={styles.eventBanner}>
+                <LinearGradient colors={[...gc] as [string, string]} style={styles.eventBanner}>
                   <Text style={styles.eventBannerLetter}>{item.title.charAt(0).toUpperCase()}</Text>
                 </LinearGradient>
                 <View style={styles.eventInfo}>
                   <Text style={styles.name} numberOfLines={1}>{item.title}</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                  <View style={styles.metaRow}>
                     <Ionicons name="mic-outline" size={11} color={Colors.textSecondary} />
                     <Text style={styles.sub} numberOfLines={1}>{item.artist}</Text>
                   </View>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+                  <View style={styles.metaRow}>
                     <Ionicons name="location-outline" size={11} color={Colors.textMuted} />
                     <Text style={styles.sub} numberOfLines={1}>{item.venue}</Text>
                   </View>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <View style={styles.metaRow}>
                     <Ionicons name="time-outline" size={11} color={Colors.textMuted} />
-                    <Text style={[styles.stat]}>{item.date}</Text>
+                    <Text style={styles.stat}>{item.date}</Text>
                   </View>
                 </View>
                 <View style={styles.eventRight}>
-                  <Text style={[styles.eventPrice, item.price === 'Ücretsiz' && { color: Colors.success }]}>{item.price}</Text>
+                  <View style={[styles.eventGenrePill, { borderColor: gc[0] + '55', backgroundColor: gc[0] + '18' }]}>
+                    <Text style={[styles.eventGenreText, { color: gc[0] }]}>{item.genre}</Text>
+                  </View>
+                  <Text style={[styles.eventPrice, item.price === 'Ücretsiz' && styles.eventPriceFree]}>{item.price}</Text>
                   <TouchableOpacity style={styles.removeBtn} onPress={() => removeEvent(item.id)}>
-                    <Ionicons name="heart" size={22} color={Colors.error} />
+                    <Ionicons name="heart" size={20} color={Colors.error} />
                   </TouchableOpacity>
                 </View>
               </PressableScale>
@@ -241,7 +305,7 @@ export default function FavoritesScreen({ navigation }: any) {
 function EmptyState({ iconName, text }: { iconName: React.ComponentProps<typeof Ionicons>['name']; text: string }) {
   return (
     <View style={styles.empty}>
-      <Ionicons name={iconName} size={48} color={Colors.textMuted} style={{ marginBottom: 16 }} />
+      <Ionicons name={iconName} size={48} color={Colors.textMuted} style={styles.emptyIcon} />
       <Text style={styles.emptyText}>{text}</Text>
       <Text style={styles.emptySubText}>Sanatçı, mekan veya etkinlik sayfalarında kalp simgesine basarak ekleyebilirsiniz.</Text>
     </View>
@@ -269,15 +333,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   tab: {
-    flex: 1, alignItems: 'center', paddingVertical: 10,
+    flex: 1, alignItems: 'center', paddingVertical: 6,
     borderRadius: BorderRadius.md,
     borderWidth: 1, borderColor: Colors.border,
     backgroundColor: Colors.surfaceAlt,
     flexDirection: 'row', justifyContent: 'center', gap: 6,
   },
   tabActive: { backgroundColor: Colors.primary + '22', borderColor: Colors.primary },
-  tabText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '600' },
-  tabTextActive: { color: Colors.primary, fontWeight: '700' },
+  tabText: { color: Colors.textSecondary, fontSize: 11, lineHeight: 15, fontWeight: '600' },
+  tabTextActive: { color: Colors.primary },
   tabCountBadge: {
     backgroundColor: Colors.surface,
     paddingHorizontal: 6, paddingVertical: 1,
@@ -285,6 +349,7 @@ const styles = StyleSheet.create({
   },
   tabCountBadgeActive: { backgroundColor: Colors.primary + '33' },
   tabCount: { color: Colors.textMuted, fontSize: FontSize.xs },
+  tabCountActive: { color: Colors.primary },
   list: { paddingHorizontal: Spacing.lg, paddingBottom: 110, gap: 10 },
   card: {
     flexDirection: 'row', alignItems: 'center',
@@ -307,6 +372,9 @@ const styles = StyleSheet.create({
   statItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   stat: { color: Colors.textSecondary, fontSize: FontSize.xs },
   removeBtn: { padding: 4 },
+  avatarSquare: { width: 52, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
+  emptyIcon: { marginBottom: 16 },
   eventCard: {
     flexDirection: 'row',
     backgroundColor: Colors.surface,
@@ -314,11 +382,14 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
     overflow: 'hidden',
   },
-  eventBanner: { width: 56, alignItems: 'center', justifyContent: 'center' },
+  eventBanner: { width: 70, alignItems: 'center', justifyContent: 'center' },
   eventBannerLetter: { fontSize: 22, fontWeight: '900', color: 'rgba(255,255,255,0.95)' },
   eventInfo: { flex: 1, padding: 12 },
   eventRight: { alignItems: 'flex-end', justifyContent: 'space-between', padding: 12 },
   eventPrice: { color: Colors.accent, fontSize: FontSize.sm, fontWeight: '700' },
+  eventPriceFree: { color: Colors.success },
+  eventGenrePill: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: BorderRadius.full, borderWidth: 1, marginBottom: 4 },
+  eventGenreText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.2 },
   empty: { alignItems: 'center', paddingTop: 60, paddingHorizontal: 40 },
   emptyText: { color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: '600', marginBottom: 8 },
   emptySubText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center', lineHeight: 20 },

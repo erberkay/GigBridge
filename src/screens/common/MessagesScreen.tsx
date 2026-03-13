@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   TextInput, KeyboardAvoidingView, Platform,
@@ -13,6 +13,12 @@ import {
 import { db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
+
+// ERR-MSG-001 Mesaj gönderme hatası   ERR-MSG-002 Okundu işaretleme hatası
+const ERR = {
+  SEND_MESSAGE: 'ERR-MSG-001',
+  MARK_READ:    'ERR-MSG-002',
+} as const;
 
 const ARTIST_EMOJIS = new Set(['🎤', '🎧', '🎸', '🎹', '🎵', '🎻', '🥁']);
 const VENUE_EMOJIS = new Set(['🏢', '🏛️', '🏗️']);
@@ -63,8 +69,26 @@ const DEMO_MESSAGES: Record<string, Message[]> = {
   ],
 };
 
+function formatTime(ts: any): string {
+  if (!ts) return '';
+  const date = ts.toDate?.() ?? new Date(ts);
+  return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatConvTime(ts: any): string {
+  if (!ts) return '';
+  const date = ts.toDate?.() ?? new Date(ts);
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  if (diff < 86400000) return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+  if (diff < 172800000) return 'Dün';
+  return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' });
+}
+
 export default function MessagesScreen({ navigation, route }: any) {
-  const { userId, displayName, userType } = useAuthStore();
+  const userId      = useAuthStore((s) => s.userId);
+  const displayName = useAuthStore((s) => s.displayName);
+  const userType    = useAuthStore((s) => s.userType);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -110,10 +134,9 @@ export default function MessagesScreen({ navigation, route }: any) {
   // route.params ile doğrudan konuşma açılabilir
   useEffect(() => {
     if (route?.params?.recipientName && userId) {
-      // Sadece isim ile açılıyorsa placeholder konuşma aç
       setSelectedConv({
         id: '',
-        otherUserId: '',
+        otherUserId: route.params.recipientId ?? '',
         otherName: route.params.recipientName,
         otherEmoji: '👤',
         lastMessage: '',
@@ -121,7 +144,7 @@ export default function MessagesScreen({ navigation, route }: any) {
         unread: 0,
       });
     }
-  }, [route?.params]);
+  }, [route?.params?.recipientName, route?.params?.recipientId, userId]);
 
   // Seçili konuşmanın mesajlarını dinle
   useEffect(() => {
@@ -144,18 +167,18 @@ export default function MessagesScreen({ navigation, route }: any) {
     if (userId) {
       updateDoc(doc(db, 'conversations', selectedConv.id), {
         [`unreadCount.${userId}`]: 0,
-      }).catch(() => {});
+      }).catch(() => console.warn(`[${ERR.MARK_READ}] Okundu işaretlenemedi.`));
     }
 
     return unsub;
   }, [selectedConv?.id]);
 
-  const openConversation = (conv: Conversation) => {
+  const openConversation = useCallback((conv: Conversation) => {
     setMessages([]);
     setSelectedConv(conv);
-  };
+  }, []);
 
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async () => {
     const text = messageText.trim();
     if (!text || !userId) return;
     setMessageText('');
@@ -187,7 +210,7 @@ export default function MessagesScreen({ navigation, route }: any) {
           unreadCount: { [selectedConv.otherUserId]: 1, [userId]: 0 },
         });
         convId = convRef.id;
-        setSelectedConv((prev) => prev ? { ...prev, id: convId! } : prev);
+        setSelectedConv((prev) => prev ? { ...prev, id: convRef.id } : prev);
       }
 
       if (!convId) return;
@@ -206,33 +229,18 @@ export default function MessagesScreen({ navigation, route }: any) {
         [`unreadCount.${selectedConv?.otherUserId}`]:
           (selectedConv?.unread ?? 0) + 1,
       });
-    } catch (e) {
-      // sessizce yoksay
+    } catch {
+      console.warn(`[${ERR.SEND_MESSAGE}] Mesaj gönderilemedi.`);
     }
-  };
+  }, [userId, displayName, userType, selectedConv, messageText]);
 
-  const formatTime = (ts: any) => {
-    if (!ts) return '';
-    const date = ts.toDate?.() ?? new Date(ts);
-    return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-  };
-
-  const formatConvTime = (ts: any) => {
-    if (!ts) return '';
-    const date = ts.toDate?.() ?? new Date(ts);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    if (diff < 86400000) return date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-    if (diff < 172800000) return 'Dün';
-    return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' });
-  };
 
   // Sohbet ekranı
   if (selectedConv) {
     return (
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={0}
       >
         <View style={styles.chatHeader}>
@@ -240,7 +248,7 @@ export default function MessagesScreen({ navigation, route }: any) {
             <Ionicons name="chevron-back" size={22} color={Colors.text} />
           </TouchableOpacity>
           <View style={styles.chatAvatar}>
-            <LinearGradient colors={getConvColors(selectedConv.otherEmoji)} style={styles.chatAvatarGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
+            <LinearGradient colors={[...getConvColors(selectedConv.otherEmoji)]} style={styles.chatAvatarGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
               <Text style={styles.chatAvatarInitial}>{selectedConv.otherName.charAt(0).toUpperCase()}</Text>
             </LinearGradient>
           </View>
@@ -263,9 +271,11 @@ export default function MessagesScreen({ navigation, route }: any) {
           renderItem={({ item }) => {
             const isMe = item.senderId === userId;
             return (
-              <View style={[styles.messageBubble, isMe ? styles.myBubble : styles.theirBubble]}>
-                <Text style={[styles.messageText, isMe && styles.myMessageText]}>{item.text}</Text>
-                <Text style={[styles.messageTime, isMe && styles.myMessageTime]}>{formatTime(item.createdAt)}</Text>
+              <View style={[styles.messageRow, isMe ? styles.messageRowRight : styles.messageRowLeft]}>
+                <View style={[styles.messageBubble, isMe ? styles.myBubble : styles.theirBubble]}>
+                  <Text style={[styles.messageText, isMe && styles.myMessageText]}>{item.text}</Text>
+                  <Text style={[styles.messageTime, isMe && styles.myMessageTime]}>{formatTime(item.createdAt)}</Text>
+                </View>
               </View>
             );
           }}
@@ -294,7 +304,7 @@ export default function MessagesScreen({ navigation, route }: any) {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Mesajlar</Text>
-        <Text style={styles.subtitle}>{displayName}</Text>
+        <Text style={styles.subtitle}>{displayName ?? ''}</Text>
       </View>
 
       {loadingConvs ? (
@@ -309,7 +319,7 @@ export default function MessagesScreen({ navigation, route }: any) {
           renderItem={({ item }) => (
             <TouchableOpacity style={styles.convCard} onPress={() => openConversation(item)}>
               <View style={styles.convAvatar}>
-                <LinearGradient colors={getConvColors(item.otherEmoji)} style={styles.convAvatarGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
+                <LinearGradient colors={[...getConvColors(item.otherEmoji)]} style={styles.convAvatarGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
                   <Text style={styles.convAvatarInitial}>{item.otherName.charAt(0).toUpperCase()}</Text>
                 </LinearGradient>
               </View>
@@ -331,7 +341,7 @@ export default function MessagesScreen({ navigation, route }: any) {
           )}
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Ionicons name="chatbubbles-outline" size={48} color={Colors.textMuted} style={{ marginBottom: 16 }} />
+              <Ionicons name="chatbubbles-outline" size={48} color={Colors.textMuted} style={styles.emptyIcon} />
               <Text style={styles.emptyText}>Henüz mesajınız yok.</Text>
               <Text style={styles.emptySubText}>Sanatçı veya mekan profilinden mesaj başlatabilirsiniz.</Text>
             </View>
@@ -389,6 +399,9 @@ const styles = StyleSheet.create({
   messageList: { padding: Spacing.lg, gap: 10, flexGrow: 1 },
   emptyChatWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 60 },
   emptyChatText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center' },
+  messageRow: { flexDirection: 'row' },
+  messageRowRight: { justifyContent: 'flex-end' },
+  messageRowLeft: { justifyContent: 'flex-start' },
   messageBubble: {
     maxWidth: '75%',
     padding: Spacing.md,
@@ -397,12 +410,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
   },
   myBubble: {
-    alignSelf: 'flex-end',
     backgroundColor: Colors.primary,
     borderColor: Colors.primary,
     borderBottomRightRadius: 4,
   },
-  theirBubble: { alignSelf: 'flex-start', borderBottomLeftRadius: 4 },
+  theirBubble: { borderBottomLeftRadius: 4 },
   messageText: { color: Colors.text, fontSize: FontSize.sm, lineHeight: 20 },
   myMessageText: { color: '#fff' },
   messageTime: { color: Colors.textMuted, fontSize: 10, marginTop: 4, alignSelf: 'flex-end' },
@@ -428,4 +440,5 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyText: { color: Colors.textSecondary, fontSize: FontSize.md, marginBottom: 8 },
   emptySubText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center', paddingHorizontal: 40 },
+  emptyIcon: { marginBottom: 16 },
 });

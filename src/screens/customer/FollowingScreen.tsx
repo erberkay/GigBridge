@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
@@ -17,6 +17,12 @@ interface FollowedArtist {
   followers?: string;
   lastEvent?: string;
 }
+
+// ERR-FOLLOWING-001 Takipten çıkma hatası   ERR-FOLLOWING-002 Firestore snapshot hatası
+const ERR = {
+  UNFOLLOW: 'ERR-FOLLOWING-001',
+  SNAPSHOT: 'ERR-FOLLOWING-002',
+} as const;
 
 const GENRE_COLORS: Record<string, readonly [string, string]> = {
   Jazz: ['#F59E0B', '#D97706'],
@@ -37,7 +43,7 @@ const DEMO_FOLLOWING: FollowedArtist[] = [
 ];
 
 export default function FollowingScreen({ navigation }: any) {
-  const { userId } = useAuthStore();
+  const userId = useAuthStore((s) => s.userId);
   const isDemo = userId?.startsWith('demo_') ?? false;
   const [artists, setArtists] = useState<FollowedArtist[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,31 +54,38 @@ export default function FollowingScreen({ navigation }: any) {
       setLoading(false);
       return;
     }
-    if (!userId) return;
+    if (!userId) { setLoading(false); return; }
     const unsub = onSnapshot(
       collection(db, 'users', userId, 'following'),
       (snap) => {
         setArtists(snap.docs.map((d) => ({ id: d.id, ...d.data() } as FollowedArtist)));
         setLoading(false);
       },
+      () => {
+        console.warn(`[${ERR.SNAPSHOT}] Following snapshot hatası.`);
+        setLoading(false);
+      },
     );
     return unsub;
   }, [userId]);
 
-  const unfollow = async (docId: string) => {
+  const unfollow = useCallback(async (docId: string) => {
     if (isDemo) {
       setArtists((prev) => prev.filter((a) => a.id !== docId));
       return;
     }
     if (!userId) return;
-    await deleteDoc(doc(db, 'users', userId, 'following', docId));
-  };
+    try {
+      await deleteDoc(doc(db, 'users', userId, 'following', docId));
+    } catch {
+      console.warn(`[${ERR.UNFOLLOW}] Takipten çıkılamadı.`);
+    }
+  }, [isDemo, userId]);
 
-  const getAvatarColors = (name: string, genre?: string): [string, string] => {
-    if (genre && GENRE_COLORS[genre]) return GENRE_COLORS[genre] as [string, string];
-    const hue = name.charCodeAt(0) % 360;
+  const getAvatarColors = useCallback((name: string, genre?: string): [string, string] => {
+    if (genre && GENRE_COLORS[genre]) return [...GENRE_COLORS[genre]] as [string, string];
     return [Colors.primary, Colors.primaryDark];
-  };
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -85,7 +98,7 @@ export default function FollowingScreen({ navigation }: any) {
       </LinearGradient>
 
       {loading ? (
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: 40 }} />
+        <ActivityIndicator color={Colors.primary} style={styles.loader} />
       ) : (
         <FlatList
           data={artists}
@@ -104,8 +117,7 @@ export default function FollowingScreen({ navigation }: any) {
                     id: item.artistId,
                     name: item.artistName,
                     genre: item.genre ?? 'Müzik',
-                    rating: 4.7,
-                    followers: item.followers ?? '5K',
+                    followers: item.followers ?? '—',
                   }
                 })}
               >
@@ -116,7 +128,7 @@ export default function FollowingScreen({ navigation }: any) {
                   <Text style={styles.cardName}>{item.artistName}</Text>
                   <View style={styles.cardMeta}>
                     {item.genre && genreColors ? (
-                      <LinearGradient colors={genreColors as any} style={styles.genreBadge} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                      <LinearGradient colors={[...genreColors] as [string, string]} style={styles.genreBadge} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                         <Text style={styles.genreBadgeText}>{item.genre}</Text>
                       </LinearGradient>
                     ) : item.genre ? (
@@ -125,32 +137,34 @@ export default function FollowingScreen({ navigation }: any) {
                       </View>
                     ) : null}
                     {item.followers && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <View style={styles.metaItem}>
                         <Ionicons name="people-outline" size={11} color={Colors.textMuted} />
                         <Text style={styles.followersText}>{item.followers}</Text>
                       </View>
                     )}
                   </View>
                   {item.lastEvent && (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <View style={styles.metaItem}>
                       <Ionicons name="location-outline" size={11} color={Colors.textMuted} />
                       <Text style={styles.lastEvent}>{item.lastEvent}</Text>
                     </View>
                   )}
                 </View>
+                <View style={styles.cardRight}>
                 <TouchableOpacity
-                  style={styles.unfollowBtn}
                   onPress={() => unfollow(item.id)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
-                  <Text style={styles.unfollowText}>Takibi Bırak</Text>
+                  <Ionicons name="heart" size={20} color={Colors.error} />
                 </TouchableOpacity>
+                <Ionicons name="chevron-forward" size={14} color={Colors.border} />
+              </View>
               </TouchableOpacity>
             );
           }}
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Ionicons name="musical-notes-outline" size={48} color={Colors.textMuted} style={{ marginBottom: 16 }} />
+              <Ionicons name="musical-notes-outline" size={48} color={Colors.textMuted} style={styles.emptyIcon} />
               <Text style={styles.emptyText}>Henüz kimseyi takip etmiyorsunuz.</Text>
               <Text style={styles.emptySubText}>Sanatçı profillerinden takip edebilirsiniz.</Text>
             </View>
@@ -197,13 +211,10 @@ const styles = StyleSheet.create({
   genreBadgePlainText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: '600' },
   followersText: { color: Colors.textMuted, fontSize: FontSize.xs },
   lastEvent: { color: Colors.textMuted, fontSize: FontSize.xs },
-  unfollowBtn: {
-    paddingHorizontal: 12, paddingVertical: 7,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1, borderColor: Colors.error + '55',
-    backgroundColor: Colors.error + '11',
-  },
-  unfollowText: { color: Colors.error, fontSize: FontSize.xs, fontWeight: '600' },
+  cardRight: { alignItems: 'center', gap: 10 },
+  loader: { marginTop: 40 },
+  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  emptyIcon: { marginBottom: 16 },
   empty: { alignItems: 'center', paddingTop: 80 },
   emptyText: { color: Colors.textSecondary, fontSize: FontSize.md, marginBottom: 8 },
   emptySubText: { color: Colors.textMuted, fontSize: FontSize.sm, textAlign: 'center', paddingHorizontal: 40 },

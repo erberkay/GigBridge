@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-import { View, ActivityIndicator } from 'react-native';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../services/firebase';
 import { useAuthStore } from '../store/authStore';
 import { Colors } from '../theme';
-import { UserType } from '../types';
+import { UserType, OrgRole } from '../types';
 import { registerForPushNotifications } from '../services/notificationService';
 
 // Auth ekranları
@@ -21,21 +21,25 @@ import OnboardingScreen, { ONBOARDING_KEY } from '../screens/auth/OnboardingScre
 import CustomerNavigator from './CustomerNavigator';
 import ArtistNavigator from './ArtistNavigator';
 import VenueNavigator from './VenueNavigator';
+import OrganizerNavigator from './OrganizerNavigator';
 
 const Stack = createStackNavigator();
 
 export default function RootNavigator() {
-  const { isAuthenticated, isLoading, userType, userId, setUser, clearUser } = useAuthStore();
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isLoading       = useAuthStore((s) => s.isLoading);
+  const userType        = useAuthStore((s) => s.userType);
+  const userId          = useAuthStore((s) => s.userId);
+  const setUser         = useAuthStore((s) => s.setUser);
+  const clearUser       = useAuthStore((s) => s.clearUser);
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
 
-  // Onboarding kontrolü
   useEffect(() => {
     AsyncStorage.getItem(ONBOARDING_KEY).then((val) => {
       setShowOnboarding(val !== 'true');
     });
   }, []);
 
-  // Firebase auth dinleyici
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
@@ -44,11 +48,14 @@ export default function RootNavigator() {
           if (userDoc.exists()) {
             const data = userDoc.data();
             setUser({
-              userId: firebaseUser.uid,
-              email: firebaseUser.email!,
+              userId:      firebaseUser.uid,
+              email:       firebaseUser.email ?? '',
               displayName: data.displayName,
-              photoURL: data.photoURL,
-              userType: data.userType as UserType,
+              photoURL:    data.photoURL,
+              userType:    data.userType as UserType,
+              orgId:       data.orgId ?? null,
+              orgRole:     (data.orgRole ?? null) as OrgRole | null,
+              orgName:     data.orgName ?? null,
             });
           } else {
             clearUser();
@@ -63,17 +70,15 @@ export default function RootNavigator() {
     return unsubscribe;
   }, []);
 
-  // Push notification kaydı (giriş yapıldığında)
   useEffect(() => {
     if (userId) {
       registerForPushNotifications(userId);
     }
   }, [userId]);
 
-  // Onboarding veya auth yüklenirken bekle
   if (isLoading || showOnboarding === null) {
     return (
-      <View style={{ flex: 1, backgroundColor: Colors.background, justifyContent: 'center', alignItems: 'center' }}>
+      <View style={navStyles.loader}>
         <ActivityIndicator size="large" color={Colors.primary} />
       </View>
     );
@@ -93,12 +98,17 @@ export default function RootNavigator() {
           </>
         ) : (
           <>
-            {userType === 'customer' && <Stack.Screen name="CustomerApp" component={CustomerNavigator} />}
-            {userType === 'artist' && <Stack.Screen name="ArtistApp" component={ArtistNavigator} />}
-            {userType === 'venue' && <Stack.Screen name="VenueApp" component={VenueNavigator} />}
+            {userType === 'customer'   && <Stack.Screen name="CustomerApp"   component={CustomerNavigator} />}
+            {userType === 'artist'     && <Stack.Screen name="ArtistApp"     component={ArtistNavigator} />}
+            {userType === 'venue'      && <Stack.Screen name="VenueApp"      component={VenueNavigator} />}
+            {userType === 'organizer'  && <Stack.Screen name="OrganizerApp"  component={OrganizerNavigator} />}
           </>
         )}
       </Stack.Navigator>
     </NavigationContainer>
   );
 }
+
+const navStyles = StyleSheet.create({
+  loader: { flex: 1, backgroundColor: Colors.background, justifyContent: 'center', alignItems: 'center' },
+});

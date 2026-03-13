@@ -1,77 +1,27 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { signOut, deleteUser } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../services/firebase';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
 import { useAuthStore } from '../../store/authStore';
 import { PressableScale } from '../../components/common/PressableScale';
 
-export default function PrivacySettingsScreen({ navigation }: any) {
-  const { userType, userId, clearUser } = useAuthStore();
+// ERR-PRIVACY-001 Firestore kayıt hatası   ERR-PRIVACY-002 Hesap silme hatası
+const ERR = {
+  SAVE:        'ERR-PRIVACY-001',
+  DELETE_USER: 'ERR-PRIVACY-002',
+} as const;
 
-  const [privateAccount, setPrivateAccount] = useState(false);
-  const [showLocation, setShowLocation] = useState(true);
-  const [showAttendance, setShowAttendance] = useState(true);
-  const [showReviews, setShowReviews] = useState(true);
-  const [allowMessages, setAllowMessages] = useState(true);
-  const [showOnTimeline, setShowOnTimeline] = useState(true);
-  const [dataAnalytics, setDataAnalytics] = useState(true);
-  const [marketingEmails, setMarketingEmails] = useState(false);
-
-  const accentColor =
-    userType === 'artist' ? Colors.artistColor :
-    userType === 'venue' ? Colors.venueColor :
-    Colors.customerColor;
-
-  const handleSave = async () => {
-    try {
-      if (userId) {
-        await setDoc(doc(db, 'users', userId), {
-          privacySettings: {
-            privateAccount, showLocation, showAttendance,
-            showReviews, allowMessages, showOnTimeline,
-            dataAnalytics, marketingEmails,
-          },
-        }, { merge: true });
-      }
-      Alert.alert('Kaydedildi', 'Gizlilik ayarlarınız güncellendi.');
-    } catch {
-      Alert.alert('Hata', 'Ayarlar kaydedilemedi.');
-    }
-  };
-
-  const handleDeleteData = () => {
-    Alert.alert(
-      'Verilerimi Sil',
-      'Tüm verileriniz silinecek ve hesabınız kapatılacak. Bu işlem geri alınamaz.',
-      [
-        { text: 'İptal', style: 'cancel' },
-        {
-        text: 'Sil', style: 'destructive',
-        onPress: async () => {
-          try {
-            const user = auth.currentUser;
-            if (user) await deleteUser(user);
-            clearUser();
-          } catch {
-            // Eğer yeniden giriş gerekiyorsa önce çıkış yap
-            await signOut(auth);
-            clearUser();
-          }
-        },
-      },
-      ],
-    );
-  };
-
-  const SettingRow = ({
-    label, desc, value, onChange,
-  }: { label: string; desc: string; value: boolean; onChange: (v: boolean) => void }) => (
+function SettingRow({ label, desc, value, onChange, accentColor }: {
+  label: string; desc: string; value: boolean;
+  onChange: (v: boolean) => void; accentColor: string;
+}) {
+  return (
     <View style={styles.settingRow}>
       <View style={styles.settingInfo}>
         <Text style={styles.settingLabel}>{label}</Text>
@@ -85,6 +35,84 @@ export default function PrivacySettingsScreen({ navigation }: any) {
       />
     </View>
   );
+}
+
+export default function PrivacySettingsScreen({ navigation }: any) {
+  const userType  = useAuthStore((s) => s.userType);
+  const userId    = useAuthStore((s) => s.userId);
+  const clearUser = useAuthStore((s) => s.clearUser);
+
+  const [privateAccount, setPrivateAccount] = useState(false);
+  const [showLocation, setShowLocation] = useState(true);
+  const [showAttendance, setShowAttendance] = useState(true);
+  const [showReviews, setShowReviews] = useState(true);
+  const [allowMessages, setAllowMessages] = useState(true);
+  const [showOnTimeline, setShowOnTimeline] = useState(true);
+  const [dataAnalytics, setDataAnalytics] = useState(true);
+  const [marketingEmails, setMarketingEmails] = useState(false);
+
+  useEffect(() => {
+    if (!userId) return;
+    getDoc(doc(db, 'users', userId)).then((snap) => {
+      const ps = snap.data()?.privacySettings;
+      if (!ps) return;
+      if (ps.privateAccount  !== undefined) setPrivateAccount(ps.privateAccount);
+      if (ps.showLocation    !== undefined) setShowLocation(ps.showLocation);
+      if (ps.showAttendance  !== undefined) setShowAttendance(ps.showAttendance);
+      if (ps.showReviews     !== undefined) setShowReviews(ps.showReviews);
+      if (ps.allowMessages   !== undefined) setAllowMessages(ps.allowMessages);
+      if (ps.showOnTimeline  !== undefined) setShowOnTimeline(ps.showOnTimeline);
+      if (ps.dataAnalytics   !== undefined) setDataAnalytics(ps.dataAnalytics);
+      if (ps.marketingEmails !== undefined) setMarketingEmails(ps.marketingEmails);
+    }).catch(() => { /* use defaults */ });
+  }, [userId]);
+
+  const accentColor = useMemo(() =>
+    userType === 'artist' ? Colors.artistColor :
+    userType === 'venue'  ? Colors.venueColor :
+    Colors.customerColor,
+  [userType]);
+
+  const handleSave = useCallback(async () => {
+    try {
+      if (userId) {
+        await setDoc(doc(db, 'users', userId), {
+          privacySettings: {
+            privateAccount, showLocation, showAttendance,
+            showReviews, allowMessages, showOnTimeline,
+            dataAnalytics, marketingEmails,
+          },
+        }, { merge: true });
+      }
+      Alert.alert('Kaydedildi', 'Gizlilik ayarlarınız güncellendi.');
+    } catch {
+      Alert.alert('Hata', `Ayarlar kaydedilemedi. (${ERR.SAVE})`);
+    }
+  }, [userId, privateAccount, showLocation, showAttendance, showReviews, allowMessages, showOnTimeline, dataAnalytics, marketingEmails]);
+
+  const handleDeleteData = useCallback(() => {
+    Alert.alert(
+      'Verilerimi Sil',
+      'Tüm verileriniz silinecek ve hesabınız kapatılacak. Bu işlem geri alınamaz.',
+      [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Sil', style: 'destructive',
+          onPress: async () => {
+            try {
+              const user = auth.currentUser;
+              if (user) await deleteUser(user);
+            } catch {
+              console.warn(`[${ERR.DELETE_USER}] deleteUser başarısız, signOut deneniyor.`);
+              try { await signOut(auth); } catch { /* sign-out da başarısız */ }
+            } finally {
+              clearUser();
+            }
+          },
+        },
+      ],
+    );
+  }, [clearUser]);
 
   return (
     <View style={styles.container}>
@@ -110,6 +138,7 @@ export default function PrivacySettingsScreen({ navigation }: any) {
               desc="Takip isteği onaylamadan profiliniz görüntülenemez"
               value={privateAccount}
               onChange={setPrivateAccount}
+              accentColor={accentColor}
             />
             <View style={[styles.settingRow, styles.settingRowBorder]}>
               <View style={styles.settingInfo}>
@@ -230,13 +259,13 @@ export default function PrivacySettingsScreen({ navigation }: any) {
         <View style={styles.dangerZone}>
           <Text style={styles.dangerTitle}>Tehlikeli Bölge</Text>
           <TouchableOpacity style={styles.deleteBtn} onPress={handleDeleteData}>
-            <Ionicons name="trash-outline" size={16} color={Colors.error} style={{ marginRight: 8 }} />
+            <Ionicons name="trash-outline" size={16} color={Colors.error} style={styles.trashIcon} />
             <Text style={styles.deleteBtnText}>Tüm Verilerimi Sil</Text>
           </TouchableOpacity>
           <Text style={styles.deleteNote}>Bu işlem geri alınamaz. Hesabınız ve tüm verileriniz silinir.</Text>
         </View>
 
-        <View style={{ height: 60 }} />
+        <View style={styles.bottomSpacer} />
       </ScrollView>
     </View>
   );
@@ -288,4 +317,6 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: { color: Colors.error, fontSize: FontSize.md, fontWeight: '600' },
   deleteNote: { color: Colors.textMuted, fontSize: FontSize.xs, textAlign: 'center' },
+  trashIcon: { marginRight: 8 },
+  bottomSpacer: { height: 60 },
 });

@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  TextInput, Alert,
+  View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { collection, doc, onSnapshot, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../../services/firebase';
+import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
 
 const AVATAR_PALETTES: [string, string][] = [
@@ -44,28 +46,73 @@ const FILTERS = [
 ];
 
 export default function EventAttendeesScreen({ route, navigation }: any) {
-  const { event } = route.params ?? { event: { title: 'Etkinlik', attendees: 124 } };
+  const event   = route.params?.event ?? { title: 'Etkinlik', attendees: 124 };
+  const eventId = route.params?.event?.id ?? null;
+  const userId  = useAuthStore((s) => s.userId);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [attendees, setAttendees] = useState(ATTENDEES);
 
-  const toggleFollow = (id: string) => {
+  useEffect(() => {
+    if (!eventId) return;
+    const unsub = onSnapshot(
+      collection(db, 'events', eventId, 'attendees'),
+      (snap) => {
+        if (snap.empty) { setAttendees([]); return; }
+        const loaded = snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            id:          d.id,
+            name:        data.displayName ?? data.name ?? 'Kullanıcı',
+            genre:       data.genre ?? '',
+            mutual:      0,
+            isFollowing: false,
+          };
+        });
+        setAttendees(loaded);
+      },
+      (err) => console.warn('[EventAttendees] onSnapshot:', err),
+    );
+    return () => unsub();
+  }, [eventId]);
+
+  const toggleFollow = useCallback(async (attendeeId: string) => {
+    const current = attendees.find((a) => a.id === attendeeId);
+    const isNowFollowing = !current?.isFollowing;
     setAttendees((prev) => prev.map((a) =>
-      a.id === id ? { ...a, isFollowing: !a.isFollowing } : a,
+      a.id === attendeeId ? { ...a, isFollowing: isNowFollowing } : a,
     ));
-  };
+    if (!userId || userId.startsWith('demo_')) return;
+    const followRef = doc(db, 'users', userId, 'following', attendeeId);
+    try {
+      if (isNowFollowing) {
+        const item = attendees.find((a) => a.id === attendeeId);
+        await setDoc(followRef, {
+          artistId:   attendeeId,
+          artistName: item?.name ?? '',
+          genre:      item?.genre ?? '',
+          followers:  '—',
+          followedAt: serverTimestamp(),
+        });
+      } else {
+        await deleteDoc(followRef);
+      }
+    } catch { /* local state already updated */ }
+  }, [userId, attendees]);
 
-  const filtered = attendees
-    .filter((a) => {
-      if (filter === 'mutual') return a.mutual > 0;
-      if (filter === 'following') return a.isFollowing;
-      return true;
-    })
-    .filter((a) => search === '' || a.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = useMemo(() =>
+    attendees
+      .filter((a) => {
+        if (filter === 'mutual') return a.mutual > 0;
+        if (filter === 'following') return a.isFollowing;
+        return true;
+      })
+      .filter((a) => search === '' || a.name.toLowerCase().includes(search.toLowerCase())),
+  [attendees, filter, search]);
 
-  const handleMessage = (name: string) => {
-    navigation.navigate('Messages', { recipientName: name });
-  };
+  const handleMessage = useCallback((id: string, name: string) => {
+    navigation.navigate('Messages', { recipientId: id, recipientName: name });
+  }, [navigation]);
 
   return (
     <View style={styles.container}>
@@ -80,13 +127,14 @@ export default function EventAttendeesScreen({ route, navigation }: any) {
 
       {/* Search */}
       <View style={styles.searchContainer}>
-        <Ionicons name="search-outline" size={16} color={Colors.textMuted} style={{ marginRight: 8 }} />
+        <Ionicons name="search-outline" size={16} color={Colors.textMuted} style={styles.searchIcon} />
         <TextInput
           style={styles.searchInput}
           placeholder="Katılımcı ara..."
           placeholderTextColor={Colors.textMuted}
           value={search}
           onChangeText={setSearch}
+          returnKeyType="search"
         />
       </View>
 
@@ -95,6 +143,7 @@ export default function EventAttendeesScreen({ route, navigation }: any) {
         horizontal
         data={FILTERS}
         keyExtractor={(f) => f.key}
+        extraData={filter}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.filterList}
         style={styles.filterScroll}
@@ -118,6 +167,7 @@ export default function EventAttendeesScreen({ route, navigation }: any) {
       <FlatList
         data={filtered}
         keyExtractor={(a) => a.id}
+        style={styles.listFlex}
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
         renderItem={({ item, index }) => {
@@ -131,7 +181,7 @@ export default function EventAttendeesScreen({ route, navigation }: any) {
               <Text style={styles.attendeeName}>{item.name}</Text>
               <Text style={styles.attendeeGenre}>{item.genre}</Text>
               {item.mutual > 0 && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <View style={styles.mutualRow}>
                   <Ionicons name="people-outline" size={11} color={Colors.customerColor} />
                   <Text style={styles.mutualText}>{item.mutual} ortak takip</Text>
                 </View>
@@ -146,7 +196,7 @@ export default function EventAttendeesScreen({ route, navigation }: any) {
                   {item.isFollowing ? 'Takipte' : '+ Takip'}
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.msgBtn} onPress={() => handleMessage(item.name)}>
+              <TouchableOpacity style={styles.msgBtn} onPress={() => handleMessage(item.id, item.name)}>
                 <Ionicons name="chatbubble-outline" size={16} color={Colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -155,7 +205,7 @@ export default function EventAttendeesScreen({ route, navigation }: any) {
         }}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Ionicons name="people-outline" size={48} color={Colors.textMuted} style={{ marginBottom: 16 }} />
+            <Ionicons name="people-outline" size={48} color={Colors.textMuted} style={styles.emptyIcon} />
             <Text style={styles.emptyText}>Eşleşen katılımcı bulunamadı.</Text>
           </View>
         }
@@ -178,17 +228,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   searchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, paddingVertical: 13 },
-  filterScroll: { maxHeight: 44, marginBottom: Spacing.sm },
-  filterList: { paddingHorizontal: Spacing.lg, gap: 8, alignItems: 'center' },
+  filterScroll: { marginBottom: Spacing.md, flexGrow: 0 },
+  filterList: { paddingHorizontal: Spacing.lg, gap: 8, paddingVertical: 4, alignItems: 'center' },
   filterChip: {
-    paddingHorizontal: 14, paddingVertical: 6,
+    paddingHorizontal: 10, paddingVertical: 5,
+    alignSelf: 'flex-start',
     borderRadius: BorderRadius.full,
     borderWidth: 1, borderColor: Colors.border,
     backgroundColor: Colors.surfaceAlt,
   },
   filterChipActive: { backgroundColor: Colors.customerColor, borderColor: Colors.customerColor },
-  filterText: { color: Colors.textSecondary, fontSize: FontSize.sm },
-  filterTextActive: { color: '#fff', fontWeight: '600' },
+  filterText: { color: Colors.textSecondary, fontSize: 11, lineHeight: 15, fontWeight: '600' },
+  filterTextActive: { color: '#fff' },
   proNotice: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: Spacing.lg, marginBottom: Spacing.sm,
@@ -198,6 +249,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.accent + '33',
   },
   proNoticeText: { color: Colors.accent, fontSize: FontSize.xs, flex: 1 },
+  listFlex: { flex: 1 },
   list: { paddingHorizontal: Spacing.lg, paddingBottom: 80, gap: 10 },
   attendeeCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
@@ -218,18 +270,23 @@ const styles = StyleSheet.create({
   attendeeActions: { flexDirection: 'row', gap: 6, alignItems: 'center' },
   followBtn: {
     paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: BorderRadius.full,
-    backgroundColor: Colors.customerColor,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(109,40,217,0.35)',
+    backgroundColor: 'rgba(109,40,217,0.07)',
   },
-  followingBtn: { backgroundColor: Colors.surfaceAlt, borderWidth: 1, borderColor: Colors.border },
-  followBtnText: { color: '#fff', fontSize: FontSize.xs, fontWeight: '700' },
-  followingBtnText: { color: Colors.textSecondary },
+  followingBtn: { backgroundColor: 'rgba(109,40,217,0.13)', borderColor: 'rgba(109,40,217,0.45)' },
+  followBtnText: { color: '#A78BFA', fontSize: FontSize.xs, fontWeight: '700' },
+  followingBtnText: { color: '#C084FC' },
   msgBtn: {
     width: 34, height: 34, borderRadius: 17,
     backgroundColor: Colors.surfaceAlt,
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: Colors.border,
   },
+  searchIcon: { marginRight: 8 },
+  mutualRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  emptyIcon: { marginBottom: 16 },
   empty: { alignItems: 'center', paddingTop: 60 },
   emptyText: { color: Colors.textSecondary, fontSize: FontSize.md },
 });

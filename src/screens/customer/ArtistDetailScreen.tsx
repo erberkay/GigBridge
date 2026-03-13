@@ -1,11 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, Alert, Modal, Image, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, addDoc, serverTimestamp, doc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
+// ─── Hata Kodları ────────────────────────────────────────────────────────────
+// ERR-ARTIST-001  Follow/unfollow Firestore hatası
+// ERR-ARTIST-002  Yorum gönderilemedi
+// ERR-ARTIST-003  Kimlik doğrulama eksik (userId null)
+// ERR-ARTIST-004  Yorum metni çok kısa
+// ERR-ARTIST-005  Puan seçilmedi
+// ERR-ARTIST-006  Başlangıç takip durumu yüklenemedi
+const ERR = {
+  FOLLOW_FAILED:      'ERR-ARTIST-001',
+  REVIEW_FAILED:      'ERR-ARTIST-002',
+  NOT_AUTHENTICATED:  'ERR-ARTIST-003',
+  REVIEW_TOO_SHORT:   'ERR-ARTIST-004',
+  NO_RATING:          'ERR-ARTIST-005',
+  FOLLOW_LOAD_FAILED: 'ERR-ARTIST-006',
+} as const;
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { collection, addDoc, serverTimestamp, doc, setDoc, deleteDoc, getDoc, onSnapshot, query, where, updateDoc, increment } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { useAuthStore } from '../../store/authStore';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
@@ -17,68 +34,117 @@ const ARTIST_REVIEWS = [
   { id: '3', author: 'Selin T.', rating: 5, comment: 'Harika müzik seçimleri, gece boyunca dans ettik!', date: '2 hafta önce' },
 ];
 
-export default function ArtistDetailScreen({ route, navigation }: any) {
-  const { artist } = route.params ?? { artist: { name: 'Sanatçı', genre: 'Müzik', rating: 4.5, followers: '5K', emoji: '🎤' } };
-  const { userId, displayName } = useAuthStore();
-  const [showReviewModal, setShowReviewModal] = useState(false);
-  const [selectedRating, setSelectedRating] = useState(0);
-  const [reviewText, setReviewText] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [following, setFollowing] = useState(false);
-  const [followLoading, setFollowLoading] = useState(false);
+const DEFAULT_ARTIST = { name: 'Sanatçı', genre: 'Müzik', rating: 4.5, followers: '5K' };
 
-  const handleFollow = async () => {
+export default function ArtistDetailScreen({ route, navigation }: any) {
+  const artist = route.params?.artist ?? DEFAULT_ARTIST;
+  // Selectors — sadece gereken alanları subscribe et
+  const userId      = useAuthStore((s) => s.userId);
+  const displayName = useAuthStore((s) => s.displayName);
+
+  const artistId = artist.id ?? artist.name;
+
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [selectedRating, setSelectedRating]   = useState(0);
+  const [reviewText, setReviewText]           = useState('');
+  const [submitting, setSubmitting]           = useState(false);
+  const [following, setFollowing]             = useState(false);
+  const [followLoading, setFollowLoading]     = useState(false);
+  const [reviews, setReviews]                 = useState<typeof ARTIST_REVIEWS>([]);
+
+  useEffect(() => {
+    const q = query(collection(db, 'reviews'), where('targetId', '==', artistId), where('targetType', '==', 'artist'));
+    const unsub = onSnapshot(q, (snap) => {
+      if (snap.empty) { setReviews([]); return; }
+      setReviews(snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          author: data.authorName ?? 'Anonim',
+          rating: data.rating ?? 0,
+          comment: data.comment ?? '',
+          date: data.createdAt?.toDate ? data.createdAt.toDate().toLocaleDateString('tr-TR') : 'Yakın zamanda',
+        };
+      }));
+    }, (err) => console.warn('[ArtistDetail] reviews onSnapshot hatası:', err));
+    return () => unsub();
+  }, [artistId]);
+
+  // Başlangıç takip durumunu Firestore'dan yükle
+  useEffect(() => {
+    if (!userId) return;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'users', userId, 'following', artistId));
+        setFollowing(snap.exists());
+      } catch {
+        console.warn(`[${ERR.FOLLOW_LOAD_FAILED}] Takip durumu yüklenemedi.`);
+      }
+    })();
+  }, [userId, artistId]);
+
+  const handleFollow = useCallback(async () => {
     if (!userId || followLoading) return;
     setFollowLoading(true);
     try {
-      const ref = doc(db, 'users', userId, 'following', artist.id ?? artist.name);
+      const ref = doc(db, 'users', userId, 'following', artistId);
+      const artistRef = doc(db, 'users', artistId);
       if (following) {
         await deleteDoc(ref);
+        await updateDoc(artistRef, { followerCount: increment(-1) });
       } else {
         await setDoc(ref, {
-          artistId: artist.id ?? artist.name,
-          artistName: artist.name,
-          followedAt: serverTimestamp(),
+          artistId,
+          artistName:  artist.name,
+          genre:       artist.genre ?? '',
+          followers:   artist.followers ?? '—',
+          followedAt:  serverTimestamp(),
         });
+        await updateDoc(artistRef, { followerCount: increment(1) });
       }
-      setFollowing(!following);
+      setFollowing((prev) => !prev);
     } catch {
-      Alert.alert('Hata', 'İşlem gerçekleştirilemedi.');
+      Alert.alert('Hata', `İşlem gerçekleştirilemedi. (${ERR.FOLLOW_FAILED})`);
     } finally {
       setFollowLoading(false);
     }
-  };
+  }, [userId, followLoading, following, artistId, artist.name]);
 
-  const handleSubmitReview = async () => {
+  const handleSubmitReview = useCallback(async () => {
+    if (!userId) {
+      Alert.alert('Giriş Gerekli', `Yorum yapabilmek için giriş yapmalısınız. (${ERR.NOT_AUTHENTICATED})`);
+      return;
+    }
     if (selectedRating === 0) {
-      Alert.alert('Hata', 'Lütfen bir puan seçin.');
+      Alert.alert('Puan Seçin', `Lütfen bir puan seçin. (${ERR.NO_RATING})`);
       return;
     }
     if (reviewText.trim().length < 10) {
-      Alert.alert('Hata', 'Yorum en az 10 karakter olmalı.');
+      Alert.alert('Yorum Çok Kısa', `Yorum en az 10 karakter olmalı. (${ERR.REVIEW_TOO_SHORT})`);
       return;
     }
     setSubmitting(true);
     try {
       await addDoc(collection(db, 'reviews'), {
-        authorId: userId,
+        authorId:   userId,
         authorName: displayName,
-        targetId: artist.id ?? artist.name,
+        targetId:   artistId,
+        targetName: artist.name,
         targetType: 'artist',
-        rating: selectedRating,
-        comment: reviewText.trim(),
-        createdAt: serverTimestamp(),
+        rating:     selectedRating,
+        comment:    reviewText.trim(),
+        createdAt:  serverTimestamp(),
       });
       Alert.alert('Teşekkürler!', 'Yorumunuz başarıyla gönderildi.');
       setShowReviewModal(false);
       setSelectedRating(0);
       setReviewText('');
     } catch {
-      Alert.alert('Hata', 'Yorum gönderilemedi. Tekrar deneyin.');
+      Alert.alert('Hata', `Yorum gönderilemedi. Tekrar deneyin. (${ERR.REVIEW_FAILED})`);
     } finally {
       setSubmitting(false);
     }
-  };
+  }, [userId, displayName, selectedRating, reviewText, artistId]);
 
   return (
     <View style={styles.container}>
@@ -99,7 +165,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
                   >
-                    <Text style={styles.avatarInitial}>{artist.name?.charAt(0).toUpperCase() ?? '🎤'}</Text>
+                    <Text style={styles.avatarInitial}>{artist.name?.charAt(0).toUpperCase() ?? 'S'}</Text>
                   </LinearGradient>
                 )
               }
@@ -110,9 +176,9 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
             </View>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                <View style={styles.statRatingRow}>
                   <Ionicons name="star" size={14} color={Colors.accent} />
-                  <Text style={styles.statValue}>{artist.rating}</Text>
+                  <Text style={styles.statValue}>{artist.rating ?? '—'}</Text>
                 </View>
                 <Text style={styles.statLabel}>Puan</Text>
               </View>
@@ -123,7 +189,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Text style={styles.statValue}>{ARTIST_REVIEWS.length}</Text>
+                <Text style={styles.statValue}>{reviews.length}</Text>
                 <Text style={styles.statLabel}>Yorum</Text>
               </View>
             </View>
@@ -137,22 +203,22 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
             onPress={handleFollow}
             scaleTo={0.96}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name={following ? 'checkmark-circle' : 'add-circle-outline'} size={16} color={following ? '#fff' : Colors.primary} />
-              <Text style={[styles.followBtnText, following && styles.followBtnActiveText]}>
-                {following ? 'Takip Ediyorsun' : 'Takip Et'}
+            <View style={styles.btnInner}>
+              <Ionicons name={following ? 'checkmark-circle' : 'add-circle-outline'} size={14} color={following ? '#C084FC' : '#A78BFA'} />
+              <Text style={[styles.followBtnText, following && styles.followBtnActiveText]} numberOfLines={1}>
+                {following ? 'Takipte' : 'Takip Et'}
               </Text>
             </View>
           </PressableScale>
           <PressableScale style={styles.messageBtn} onPress={() => navigation.navigate('Messages', { recipientName: artist.name, recipientId: artist.id })} scaleTo={0.96}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="chatbubbles-outline" size={16} color={Colors.info} />
+            <View style={styles.btnInner}>
+              <Ionicons name="chatbubbles-outline" size={14} color={Colors.textSecondary} />
               <Text style={styles.messageBtnText}>Mesaj</Text>
             </View>
           </PressableScale>
           <PressableScale style={styles.reviewBtn} onPress={() => setShowReviewModal(true)} scaleTo={0.96}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="star-outline" size={16} color="#fff" />
+            <View style={styles.btnInner}>
+              <Ionicons name="star-outline" size={14} color="#fff" />
               <Text style={styles.reviewBtnText}>Puan Ver</Text>
             </View>
           </PressableScale>
@@ -162,7 +228,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Hakkında</Text>
           <Text style={styles.bio}>
-            Profesyonel DJ ve müzisyen. 10 yılı aşkın sahne deneyimiyle Electronic, House ve Techno türlerinde uzmanlaşmış sanatçı.
+            {artist.bio ?? 'Profesyonel DJ ve müzisyen. 10 yılı aşkın sahne deneyimiyle Electronic, House ve Techno türlerinde uzmanlaşmış sanatçı.'}
           </Text>
         </View>
 
@@ -170,7 +236,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Müzik Tarzları</Text>
           <View style={styles.genreTags}>
-            {['Electronic', 'House', 'Techno', 'Deep House'].map((g) => (
+            {(artist.genres ?? [artist.genre, 'House', 'Techno', 'Deep House'].filter(Boolean)).map((g: string) => (
               <View key={g} style={styles.genreTag}>
                 <Text style={styles.genreTagText}>{g}</Text>
               </View>
@@ -186,7 +252,13 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
               <Text style={styles.addReview}>+ Yorum Yap</Text>
             </TouchableOpacity>
           </View>
-          {ARTIST_REVIEWS.map((review) => (
+          {reviews.length === 0 && (
+            <View style={styles.emptyReviews}>
+              <Ionicons name="star-outline" size={32} color={Colors.textMuted} />
+              <Text style={styles.emptyReviewsText}>Henüz yorum yok.</Text>
+            </View>
+          )}
+          {reviews.map((review) => (
             <View key={review.id} style={styles.reviewCard}>
               <View style={styles.reviewTop}>
                 <View style={styles.reviewAuthorRow}>
@@ -198,7 +270,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
                     <Text style={styles.reviewDate}>{review.date}</Text>
                   </View>
                 </View>
-                <View style={{ flexDirection: 'row', gap: 2 }}>
+                <View style={styles.reviewStars}>
                   {Array.from({ length: review.rating }).map((_, i) => (
                     <Ionicons key={i} name="star" size={12} color={Colors.accent} />
                   ))}
@@ -209,7 +281,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
           ))}
         </View>
 
-        <View style={{ height: 80 }} />
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
       {/* Puan/Yorum Modal */}
@@ -221,7 +293,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
 
             <View style={styles.starRow}>
               {[1, 2, 3, 4, 5].map((star) => (
-                <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} style={{ padding: 4 }}>
+                <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} style={styles.starBtn}>
                   <Ionicons name={star <= selectedRating ? 'star' : 'star-outline'} size={36} color={star <= selectedRating ? Colors.accent : Colors.textMuted} />
                 </TouchableOpacity>
               ))}
@@ -243,7 +315,7 @@ export default function ArtistDetailScreen({ route, navigation }: any) {
                 <Text style={styles.cancelBtnText}>İptal</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+                style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
                 onPress={handleSubmitReview}
                 disabled={submitting}
               >
@@ -261,7 +333,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   header: { paddingTop: 56, paddingBottom: Spacing.xl },
   backBtn: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.md },
-  backText: {},
   artistHero: { alignItems: 'center', paddingHorizontal: Spacing.lg },
   avatarWrapper: {
     marginBottom: Spacing.md,
@@ -276,7 +347,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 3, borderColor: 'rgba(255,255,255,0.2)',
   },
-  avatarImg: { width: 100, height: 100, borderRadius: 50 },
+  avatarImg: { width: 100, height: 100, borderRadius: 50, resizeMode: 'cover' },
   avatarInitial: { fontSize: 44, fontWeight: '900', color: '#fff' },
   artistName: { color: Colors.text, fontSize: FontSize.xxl, fontWeight: '800', marginBottom: 10 },
   genrePill: {
@@ -289,6 +360,8 @@ const styles = StyleSheet.create({
   genrePillText: { color: Colors.primary, fontSize: FontSize.sm, fontWeight: '600' },
   statsRow: { flexDirection: 'row', alignItems: 'center' },
   statItem: { alignItems: 'center', paddingHorizontal: 24 },
+  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  statRatingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
   statValue: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: 2 },
   statLabel: { color: Colors.textMuted, fontSize: FontSize.xs },
   statDivider: { width: 1, height: 32, backgroundColor: Colors.border },
@@ -301,34 +374,39 @@ const styles = StyleSheet.create({
   followBtn: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: BorderRadius.md,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: Colors.primary,
+    borderColor: 'rgba(109,40,217,0.35)',
+    backgroundColor: 'rgba(109,40,217,0.07)',
     alignItems: 'center',
   },
-  followBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
-  followBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  followBtnActiveText: { color: '#fff' },
+  followBtnText: { color: '#A78BFA', fontSize: 13, fontWeight: '700' },
+  followBtnActive: { backgroundColor: 'rgba(109,40,217,0.15)', borderColor: 'rgba(109,40,217,0.5)' },
+  followBtnActiveText: { color: '#C084FC' },
   messageBtn: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: BorderRadius.md,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: Colors.info,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt,
     alignItems: 'center',
   },
-  messageBtnText: { color: Colors.info, fontSize: FontSize.md, fontWeight: '700' },
+  messageBtnText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '700' },
   reviewBtn: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    backgroundColor: '#5B21B6',
     alignItems: 'center',
   },
-  reviewBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  reviewBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   section: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.lg },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.md },
-  sectionTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: Spacing.md },
+  sectionTitle: {
+    color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', marginBottom: Spacing.md,
+    paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: Colors.primary,
+  },
   addReview: { color: Colors.primary, fontSize: FontSize.sm },
   bio: { color: Colors.textSecondary, fontSize: FontSize.md, lineHeight: 24 },
   genreTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
@@ -356,7 +434,6 @@ const styles = StyleSheet.create({
   reviewAvatarText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '700' },
   reviewAuthor: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '600' },
   reviewDate: { color: Colors.textMuted, fontSize: FontSize.xs },
-  reviewRating: { fontSize: 12 },
   reviewComment: { color: Colors.textSecondary, fontSize: FontSize.sm, lineHeight: 20 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   modalContent: {
@@ -367,7 +444,6 @@ const styles = StyleSheet.create({
   modalTitle: { color: Colors.text, fontSize: FontSize.xl, fontWeight: '800', marginBottom: 4 },
   modalSubtitle: { color: Colors.textSecondary, fontSize: FontSize.md, marginBottom: Spacing.lg },
   starRow: { flexDirection: 'row', gap: 12, marginBottom: Spacing.lg },
-  starIcon: {},
   reviewInput: {
     backgroundColor: Colors.surfaceAlt,
     borderRadius: BorderRadius.md,
@@ -380,17 +456,24 @@ const styles = StyleSheet.create({
   },
   modalButtons: { flexDirection: 'row', gap: 12 },
   cancelBtn: {
-    flex: 1, paddingVertical: 14,
-    borderRadius: BorderRadius.md,
+    flex: 1, paddingVertical: 13,
+    borderRadius: 10,
     borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surfaceAlt,
     alignItems: 'center',
   },
   cancelBtnText: { color: Colors.textSecondary, fontSize: FontSize.md, fontWeight: '600' },
   submitBtn: {
-    flex: 1, paddingVertical: 14,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.primary,
+    flex: 1, paddingVertical: 13,
+    borderRadius: 10,
+    backgroundColor: '#5B21B6',
     alignItems: 'center',
   },
   submitBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  submitBtnDisabled: { opacity: 0.6 },
+  reviewStars: { flexDirection: 'row', gap: 2 },
+  bottomSpacer: { height: 80 },
+  emptyReviews: { alignItems: 'center', paddingVertical: 24, gap: 8 },
+  emptyReviewsText: { color: Colors.textMuted, fontSize: FontSize.sm },
+  starBtn: { padding: 4 },
 });

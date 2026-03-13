@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../theme';
 import { useAuthStore } from '../../store/authStore';
 import { PressableScale } from '../../components/common/PressableScale';
+
+// ERR-NOTIF-001 Bildirim ayarları kaydedilemedi
+const ERR = { SAVE: 'ERR-NOTIF-001' } as const;
 
 const NOTIFICATION_GROUPS = [
   {
@@ -50,38 +53,49 @@ const NOTIFICATION_GROUPS = [
   },
 ];
 
+const INITIAL_SETTINGS: Record<string, boolean> = {};
+NOTIFICATION_GROUPS.forEach((group) => {
+  group.items.forEach((item) => { INITIAL_SETTINGS[item.key] = item.default; });
+});
+
 export default function NotificationsScreen({ navigation }: any) {
-  const { userType, userId } = useAuthStore();
+  const userType = useAuthStore((s) => s.userType);
+  const userId   = useAuthStore((s) => s.userId);
 
-  const initialState: Record<string, boolean> = {};
-  NOTIFICATION_GROUPS.forEach((group) => {
-    group.items.forEach((item) => {
-      initialState[item.key] = item.default;
-    });
-  });
-
-  const [settings, setSettings] = useState(initialState);
+  const [settings, setSettings] = useState(INITIAL_SETTINGS);
   const [pushEnabled, setPushEnabled] = useState(true);
 
-  const toggle = (key: string) => {
-    setSettings((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
+  useEffect(() => {
+    if (!userId) return;
+    getDoc(doc(db, 'users', userId)).then((snap) => {
+      const ns = snap.data()?.notificationSettings;
+      if (!ns) return;
+      const { pushEnabled: pe, ...rest } = ns;
+      if (pe !== undefined) setPushEnabled(pe);
+      setSettings((prev) => ({ ...prev, ...rest }));
+    }).catch(() => { /* use defaults */ });
+  }, [userId]);
 
-  const handleSave = async () => {
+  const accentColor = useMemo(() =>
+    userType === 'artist' ? Colors.artistColor :
+    userType === 'venue'  ? Colors.venueColor :
+    Colors.customerColor,
+  [userType]);
+
+  const toggle = useCallback((key: string) => {
+    setSettings((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const handleSave = useCallback(async () => {
     try {
       if (userId) {
         await setDoc(doc(db, 'users', userId), { notificationSettings: { ...settings, pushEnabled } }, { merge: true });
       }
       Alert.alert('Kaydedildi', 'Bildirim ayarlarınız güncellendi.');
     } catch {
-      Alert.alert('Hata', 'Ayarlar kaydedilemedi.');
+      Alert.alert('Hata', `Ayarlar kaydedilemedi. (${ERR.SAVE})`);
     }
-  };
-
-  const accentColor =
-    userType === 'artist' ? Colors.artistColor :
-    userType === 'venue' ? Colors.venueColor :
-    Colors.customerColor;
+  }, [userId, settings, pushEnabled]);
 
   return (
     <View style={styles.container}>
@@ -133,7 +147,7 @@ export default function NotificationsScreen({ navigation }: any) {
                   </View>
                   <Switch
                     value={settings[item.key] && pushEnabled}
-                    onValueChange={() => pushEnabled && toggle(item.key)}
+                    onValueChange={() => { if (pushEnabled) toggle(item.key); }}
                     trackColor={{ false: Colors.border, true: accentColor }}
                     thumbColor="#fff"
                     disabled={!pushEnabled}
@@ -151,7 +165,7 @@ export default function NotificationsScreen({ navigation }: any) {
           </LinearGradient>
         </PressableScale>
 
-        <View style={{ height: 60 }} />
+        <View style={styles.bottomSpacer} />
       </ScrollView>
     </View>
   );
@@ -204,4 +218,5 @@ const styles = StyleSheet.create({
   },
   saveBtnGrad: { paddingVertical: 16, alignItems: 'center' },
   saveBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
+  bottomSpacer: { height: 60 },
 });
